@@ -60,6 +60,31 @@ class Prompt7ApprovalTests(unittest.TestCase):
     def _new_approval(self):
         return create_gmail_reply_approval(DRAFT, spoken_language="en")
 
+    def test_latest_email_command_resolves_first_inbox_thread(self) -> None:
+        emails = [
+            {
+                "id": "m1",
+                "thread_id": "latest-thread",
+                "sender": "Latest Sender <latest@example.com>",
+                "subject": "Latest subject",
+                "snippet": "Latest body",
+                "timestamp": "2026-08-30T00:00:00+00:00",
+            },
+            {
+                "id": "m2",
+                "thread_id": "older-thread",
+                "sender": "Older Sender <older@example.com>",
+                "subject": "Older subject",
+                "snippet": "Older body",
+                "timestamp": "2026-08-29T00:00:00+00:00",
+            },
+        ]
+        with patch.object(gmail_service, "get_recent_emails", return_value=emails):
+            thread_id = gmail_service.resolve_reply_thread(
+                "Reply to my latest email and say: Thanks, I received your email. I'll get back to you soon."
+            )
+        self.assertEqual(thread_id, "latest-thread")
+
     def test_draft_handler_creates_pending_approval_and_never_sends(self) -> None:
         fake_approval = Approval(
             id=7,
