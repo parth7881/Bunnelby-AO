@@ -402,6 +402,32 @@ def _fetch_messages(*, max_results: int, unread_only: bool) -> list[dict[str, st
     return emails
 
 
+def _search_messages(query: str, max_results: int = 50) -> list[dict[str, str]]:
+    """Search Gmail beyond the recent inbox window for an existing reply target."""
+    query = query.strip()
+    if not query:
+        return []
+
+    service = _gmail_service()
+    result = _execute(
+        service.users()
+        .messages()
+        .list(
+            userId="me",
+            q=query,
+            maxResults=max(1, min(max_results, 100)),
+        )
+    )
+
+    refs = result.get("messages", []) or []
+    emails: list[dict[str, str]] = []
+    for ref in refs:
+        message_id = str(ref.get("id", "")).strip()
+        if message_id:
+            emails.append(_message_to_email(service, message_id))
+    return emails
+
+
 def get_recent_emails(max_results: int = 10) -> list[dict[str, str]]:
     return _fetch_messages(max_results=max_results, unread_only=False)
 
@@ -487,28 +513,14 @@ def _target_hint(user_message: str) -> str:
     return ""
 
 
-def resolve_reply_thread(user_message: str) -> str:
-    """Resolve an existing Gmail thread conservatively from the user's natural-language request."""
-    emails = get_recent_emails(max_results=MAX_REPLY_TARGET_RESULTS)
-    if not emails:
-        raise GmailTargetResolutionError("No recent inbox email is available to reply to.")
-
-    lower = user_message.casefold()
-    explicit_email = re.search(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", lower)
-    hint = _target_hint(user_message)
-    query_tokens = _normalize_tokens(hint or user_message)
-    wants_latest = bool(re.search(r"\b(?:latest|recent|newest|last)\b", lower))
-
-    # A command such as "reply to my latest email and say ..." explicitly identifies
-    # the first inbox result. Draft-body words after "say"/"tell" are instructions,
-    # not target-selection evidence, so they must not make the target look ambiguous.
-    if wants_latest and not hint and not explicit_email:
-        selected = emails[0]
-        thread_id = selected.get("thread_id", "").strip()
-        if not thread_id:
-            raise GmailTargetResolutionError("The selected Gmail message has no usable thread id.")
-        return thread_id
-
+def _rank_reply_candidates(
+    emails: list[dict[str, str]],
+    *,
+    query_tokens: set[str],
+    hint: str,
+    explicit_email: re.Match[str] | None,
+    wants_latest: bool,
+) -> tuple[float, dict[str, str]] | None:
     best: tuple[float, dict[str, str]] | None = None
     for index, email in enumerate(emails):
         sender = email.get("sender", "")
@@ -529,19 +541,79 @@ def resolve_reply_thread(user_message: str) -> str:
 
         if best is None or score > best[0]:
             best = (score, email)
+    return best
 
-    assert best is not None
-    best_score, selected = best
 
-    if best_score < 2.0:
-        raise GmailTargetResolutionError(
-            "I couldn't safely determine which email thread you mean. Mention the sender or subject."
+def _sender_search_queries(hint: str, explicit_email: re.Match[str] | None) -> list[str]:
+    if explicit_email:
+        return [f"from:{explicit_email.group(0)}"]
+
+    safe_hint = re.sub(r'["\\\r\n]+', " ", hint).strip()
+    if not safe_hint:
+        return []
+
+    queries = [f'from:"{safe_hint}"']
+    terms = re.findall(r"[a-z0-9._%+-]{2,}", safe_hint.casefold())
+    if len(terms) > 1:
+        queries.append(" ".join(f"from:{term}" for term in terms))
+    return queries
+
+
+def resolve_reply_thread(user_message: str) -> str:
+    """Resolve an existing Gmail thread conservatively from the user's natural-language request."""
+    emails = get_recent_emails(max_results=MAX_REPLY_TARGET_RESULTS)
+
+    lower = user_message.casefold()
+    explicit_email = re.search(r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}", lower)
+    hint = _target_hint(user_message)
+    query_tokens = _normalize_tokens(hint or user_message)
+    wants_latest = bool(re.search(r"\b(?:latest|recent|newest|last)\b", lower))
+
+    # A command such as "reply to my latest email and say ..." explicitly identifies
+    # the first inbox result. Draft-body words after "say"/"tell" are instructions,
+    # not target-selection evidence, so they must not make the target look ambiguous.
+    if wants_latest and not hint and not explicit_email:
+        if not emails:
+            raise GmailTargetResolutionError("No recent inbox email is available to reply to.")
+        selected = emails[0]
+        thread_id = selected.get("thread_id", "").strip()
+        if not thread_id:
+            raise GmailTargetResolutionError("The selected Gmail message has no usable thread id.")
+        return thread_id
+
+    best = _rank_reply_candidates(
+        emails,
+        query_tokens=query_tokens,
+        hint=hint,
+        explicit_email=explicit_email,
+        wants_latest=wants_latest,
+    )
+    if best is not None and best[0] >= 2.0:
+        thread_id = best[1].get("thread_id", "").strip()
+        if not thread_id:
+            raise GmailTargetResolutionError("The selected Gmail message has no usable thread id.")
+        return thread_id
+
+    # Named sender/email may be older than the bounded recent inbox window. Search Gmail
+    # directly by sender across the mailbox, then apply the same local safety scoring.
+    for search_query in _sender_search_queries(hint, explicit_email):
+        searched = _search_messages(search_query, max_results=50)
+        best = _rank_reply_candidates(
+            searched,
+            query_tokens=query_tokens,
+            hint=hint,
+            explicit_email=explicit_email,
+            wants_latest=wants_latest,
         )
+        if best is not None and best[0] >= 2.0:
+            thread_id = best[1].get("thread_id", "").strip()
+            if not thread_id:
+                raise GmailTargetResolutionError("The selected Gmail message has no usable thread id.")
+            return thread_id
 
-    thread_id = selected.get("thread_id", "").strip()
-    if not thread_id:
-        raise GmailTargetResolutionError("The selected Gmail message has no usable thread id.")
-    return thread_id
+    raise GmailTargetResolutionError(
+        "I couldn't safely determine which email thread you mean. Mention the sender or subject."
+    )
 
 
 def _decode_urlsafe(data: str) -> str:
