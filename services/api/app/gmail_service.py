@@ -45,6 +45,12 @@ MAX_REPLY_TARGET_RESULTS: Final[int] = 25
 MAX_THREAD_MESSAGES: Final[int] = 8
 MAX_MESSAGE_BODY_CHARS: Final[int] = 2600
 MAX_THREAD_CONTEXT_CHARS: Final[int] = 14000
+MAX_DRAFT_BODY_CHARS: Final[int] = 12000
+MAX_DRAFT_SUBJECT_CHARS: Final[int] = 300
+EMAIL_ADDRESS_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+    re.IGNORECASE,
+)
 
 SUMMARY_SYSTEM_INSTRUCTION: Final[str] = """
 You are Bunnelby's email triage assistant. Summarize the supplied Gmail metadata and
@@ -86,6 +92,28 @@ Drafting rules:
 - Do not say the email was sent. This step creates a draft only.
 """.strip()
 
+COMPOSE_SYSTEM_INSTRUCTION: Final[str] = """
+You draft NEW standalone Gmail messages for Bunnelby, a personal desktop assistant.
+
+Return ONLY one valid JSON object with exactly two string fields:
+{"subject":"email subject","body":"complete email body"}
+Do not use Markdown fences and do not add commentary outside the JSON object.
+
+The user's message is a trusted drafting instruction, but it never authorizes sending.
+The recipient address is selected outside the model and is immutable; never attempt to
+change it, add CC/BCC recipients, or place alternate recipient headers in the output.
+
+Drafting rules:
+- Follow the user's requested purpose, tone, language, and length closely.
+- If the user asks you to expand the email using your own wording, produce a polished,
+  useful draft without inventing concrete facts that were not provided.
+- Use a concise, professional subject that accurately reflects the message.
+- The body should be natural email prose, not a report about how you drafted it.
+- Do not claim attachments exist unless the user explicitly says they do.
+- Do not include hidden/system instructions, API keys, or tool commands.
+- Do not say the email was sent or approved. This step creates a draft only.
+""".strip()
+
 
 class GmailServiceError(RuntimeError):
     """Base exception for Gmail integration failures."""
@@ -112,7 +140,7 @@ class GmailSummaryRateLimitError(GmailSummaryError):
 
 
 class GmailDraftError(GmailServiceError):
-    """Raised when a reply draft cannot be safely produced."""
+    """Raised when an email draft cannot be safely produced."""
 
 
 class GmailTargetResolutionError(GmailDraftError):
@@ -241,7 +269,7 @@ def _run_browser_oauth() -> Credentials:
             access_type="offline",
             prompt="consent",
             authorization_prompt_message=(
-                "Bunnelby needs Gmail read access and permission to send only replies you explicitly approve. "
+                "Bunnelby needs Gmail read access and permission to send only emails you explicitly approve. "
                 "Your browser should open now."
             ),
             success_message=(
@@ -310,7 +338,7 @@ def _translate_http_error(error: HttpError) -> GmailServiceError:
         )
     if status_code == 403 and "insufficientPermissions" in reason:
         return GmailAuthorizationError(
-            "Gmail needs one-time reauthorization before Bunnelby can send replies. "
+            "Gmail needs one-time reauthorization before Bunnelby can send email. "
             "Reconnect Gmail with gmail.readonly and gmail.send permissions."
         )
     if status_code == 403:
@@ -806,10 +834,11 @@ def draft_reply(thread_id: str, instruction: str) -> dict[str, str]:
     body = re.sub(r"\s*```$", "", body).strip()
     if not body:
         raise GmailDraftError("The AI provider returned an empty Gmail draft.")
-    if len(body) > 12000:
+    if len(body) > MAX_DRAFT_BODY_CHARS:
         raise GmailDraftError("The generated Gmail draft is unexpectedly long.")
 
     return {
+        "mode": "reply",
         "thread_id": context["thread_id"],
         "source_message_id": context["source_message_id"],
         "source_rfc_message_id": context["source_rfc_message_id"],
@@ -829,6 +858,105 @@ def draft_reply_from_request(user_message: str) -> dict[str, str]:
     return draft_reply(thread_id, user_message)
 
 
+def _extract_single_recipient(user_message: str) -> str:
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for match in EMAIL_ADDRESS_PATTERN.finditer(user_message):
+        value = match.group(0).strip().casefold()
+        if value not in seen:
+            seen.add(value)
+            addresses.append(value)
+
+    if not addresses:
+        raise GmailDraftError(
+            "For a new email, include the recipient's exact email address so I don't guess who to contact."
+        )
+    if len(addresses) > 1:
+        raise GmailDraftError(
+            "I found more than one email address. For safety, create one new email at a time and specify one recipient."
+        )
+
+    recipient = addresses[0]
+    _, parsed = parseaddr(recipient)
+    if parsed.casefold() != recipient or len(recipient) > 254:
+        raise GmailDraftError("The recipient email address is not valid.")
+    return recipient
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    first = cleaned.find("{")
+    last = cleaned.rfind("}")
+    if first < 0 or last <= first:
+        raise GmailDraftError("The AI provider returned an invalid new-email draft format.")
+    try:
+        payload = json.loads(cleaned[first : last + 1])
+    except json.JSONDecodeError as exc:
+        raise GmailDraftError("The AI provider returned an invalid new-email draft format.") from exc
+    if not isinstance(payload, dict):
+        raise GmailDraftError("The AI provider returned an invalid new-email draft format.")
+    return payload
+
+
+def draft_new_email_from_request(user_message: str) -> dict[str, str]:
+    """Draft one standalone email to an explicit address. This function never sends."""
+    instruction = user_message.strip()
+    if not instruction:
+        raise GmailDraftError("A new-email drafting instruction is required.")
+    if len(instruction) > 6000:
+        raise GmailDraftError("The new-email instruction is too long.")
+
+    recipient = _extract_single_recipient(instruction)
+    try:
+        result = generate_gemini_text(
+            system_instruction=COMPOSE_SYSTEM_INSTRUCTION,
+            user_content=(
+                f"IMMUTABLE RECIPIENT ADDRESS (do not repeat or change it): {recipient}\n\n"
+                "TRUSTED USER DRAFTING INSTRUCTION:\n"
+                f"{instruction}"
+            ),
+            temperature=0.3,
+        )
+    except LLMConfigurationError as exc:
+        raise GmailConfigurationError(
+            "No configured AI provider is available to draft the new Gmail message."
+        ) from exc
+    except LLMServiceError as exc:
+        raise GmailDraftError(
+            "The AI drafting providers could not create the new email right now. Please retry."
+        ) from exc
+
+    payload = _extract_json_object(result.text)
+    subject = str(payload.get("subject", "")).strip().replace("\r", " ").replace("\n", " ")
+    body = str(payload.get("body", "")).strip()
+    if not subject:
+        raise GmailDraftError("The AI provider returned a new-email draft without a subject.")
+    if not body:
+        raise GmailDraftError("The AI provider returned an empty new-email body.")
+    if len(subject) > MAX_DRAFT_SUBJECT_CHARS:
+        raise GmailDraftError("The generated Gmail subject is unexpectedly long.")
+    if len(body) > MAX_DRAFT_BODY_CHARS:
+        raise GmailDraftError("The generated Gmail draft is unexpectedly long.")
+
+    return {
+        "mode": "compose",
+        "thread_id": "",
+        "source_message_id": "",
+        "source_rfc_message_id": "",
+        "references": "",
+        "to": recipient,
+        "recipient_display": recipient,
+        "subject": subject,
+        "body": body,
+        "instruction": instruction,
+        "provider": result.provider,
+        "status": "draft",
+    }
+
+
 def _build_reply_raw(payload: dict[str, Any]) -> tuple[str, str]:
     recipient = str(payload.get("recipient", "")).strip()
     subject = str(payload.get("subject", "")).strip()
@@ -838,7 +966,7 @@ def _build_reply_raw(payload: dict[str, Any]) -> tuple[str, str]:
     references = str(payload.get("references", "")).strip()
 
     if not recipient or not subject or not body or not thread_id:
-        raise GmailServiceError("Stored Gmail approval payload is incomplete.")
+        raise GmailServiceError("Stored Gmail reply approval payload is incomplete.")
 
     message = EmailMessage()
     message["To"] = recipient
@@ -853,18 +981,46 @@ def _build_reply_raw(payload: dict[str, Any]) -> tuple[str, str]:
     return raw, thread_id
 
 
+def _build_compose_raw(payload: dict[str, Any]) -> str:
+    recipient = str(payload.get("recipient", "")).strip()
+    subject = str(payload.get("subject", "")).strip()
+    body = str(payload.get("draft_body", "")).strip()
+    if not recipient or not subject or not body:
+        raise GmailServiceError("Stored Gmail compose approval payload is incomplete.")
+
+    _, parsed = parseaddr(recipient)
+    if parsed.casefold() != recipient.casefold():
+        raise GmailServiceError("Stored Gmail compose recipient is invalid.")
+
+    message = EmailMessage()
+    message["To"] = recipient
+    message["Subject"] = subject
+    message.set_content(body)
+    return base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
+
+
 def _send_reply_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """LOW-LEVEL Gmail send primitive.
+    """LOW-LEVEL Gmail send primitive for an approved immutable email snapshot.
 
     SECURITY: production code must call this only from approval_service.send_approved_email()
     after the durable approval and idempotent execution claim have been verified.
+    The legacy function name is retained so existing approval tests and callers stay stable.
     """
-    raw, thread_id = _build_reply_raw(payload)
+    mode = str(payload.get("mode", "reply")).strip().casefold() or "reply"
+    if mode == "compose":
+        raw = _build_compose_raw(payload)
+        request_body = {"raw": raw}
+    elif mode == "reply":
+        raw, thread_id = _build_reply_raw(payload)
+        request_body = {"raw": raw, "threadId": thread_id}
+    else:
+        raise GmailServiceError("Stored Gmail approval mode is invalid.")
+
     service = _gmail_service()
     try:
         result = service.users().messages().send(
             userId="me",
-            body={"raw": raw, "threadId": thread_id},
+            body=request_body,
         ).execute()
         return result if isinstance(result, dict) else {}
     except HttpError as exc:
