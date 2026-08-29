@@ -1,0 +1,53 @@
+:root {
+  --ao-bg: #050b0f;
+  --ao-bg-2: #081318;
+  --ao-panel: rgba(11, 24, 30, 0.78);
+  --ao-panel-strong: rgba(13, 29, 36, 0.94);
+  --ao-panel-soft: rgba(11, 24, 30, 0.52);
+  --ao-line: rgba(104, 219, 238, 0.16);
+  --ao-line-strong: rgba(104, 219, 238, 0.32);
+  --ao-text: #ecfbff;
+  --ao-text-soft: #a8c1c8;
+  --ao-text-faint: #6f8d96;
+  --ao-cyan: #61e7ff;
+  --ao-teal: #42e5c6;
+  --ao-amber: #ffbd69;
+  --ao-danger: #ff6f75;
+
+  --ao-font-display: "Segoe UI Variable Display", "Aptos Display", "Segoe UI", sans-serif;
+  --ao-font-body: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --ao-font-mono: "Cascadia Mono", Consolas, monospace;
+
+  --ao-radius-sm: 10px;
+  --ao-radius-md: 16px;
+  --ao-radius-lg: 24px;
+  --ao-radius-pill: 999px;
+
+  --ao-space-1: 4px;
+  --ao-space-2: 8px;
+  --ao-space-3: 12px;
+  --ao-space-4: 16px;
+  --ao-space-5: 20px;
+  --ao-space-6: 24px;
+  --ao-space-8: 32px;
+  --ao-space-10: 40px;
+
+  --ao-motion-fast: 160ms;
+  --ao-motion-base: 220ms;
+  --ao-motion-slow: 520ms;
+  --ao-ease: cubic-bezier(0.2, 0, 0, 1);
+  --ao-ease-emph: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --ao-shadow-panel: 0 22px 80px rgba(0, 0, 0, 0.34);
+  --ao-glow-cyan: 0 0 32px rgba(97, 231, 255, 0.18);
+  --ao-glow-strong: 0 0 40px rgba(97, 231, 255, 0.3), 0 0 90px rgba(66, 229, 198, 0.13);
+  --ao-focus: 0 0 0 3px rgba(97, 231, 255, 0.24);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ao-motion-fast: 1ms;
+    --ao-motion-base: 1ms;
+    --ao-motion-slow: 1ms;
+  }
+}

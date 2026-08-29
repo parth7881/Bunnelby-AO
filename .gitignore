@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# SQLite runtime files
+database/*.db
+database/*.db-journal
+database/*.db-shm
+database/*.db-wal
+
+# Node / Electron
+node_modules/
+dist/
+build/
+release/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local integration backups
+.ao-backups/
+config/google_oauth_client*.json
+config/credentials*.json
+
+# AO local personal profile / memory metadata
+database/ao_user_profile.json
+
+# Piper voice models are runtime assets stored outside the repository
+*.onnx
+*.onnx.json
+
+# Local encrypted credentials / keys
+*.enc
+*.key

@@ -1,0 +1,59 @@
+.voice-wave {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.voice-wave span {
+  width: 2px;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--ao-cyan), var(--ao-teal));
+  opacity: 0.28;
+  transform-origin: center;
+}
+
+.voice-wave--idle span {
+  height: 5px;
+}
+
+.voice-wave--listening span {
+  animation: wave-listen 850ms ease-in-out infinite alternate;
+  animation-delay: calc(var(--i) * -47ms);
+}
+
+.voice-wave--thinking span {
+  animation: wave-think 1.25s ease-in-out infinite;
+  animation-delay: calc(var(--i) * -58ms);
+}
+
+.voice-wave--speaking span {
+  opacity: 0.92;
+  box-shadow: 0 0 12px rgba(97, 231, 255, 0.45);
+  animation: wave-speak 460ms ease-in-out infinite alternate;
+  animation-delay: calc(var(--i) * -31ms);
+}
+
+@keyframes wave-listen {
+  from { height: 7px; opacity: 0.34; }
+  to { height: var(--listen-height); opacity: 0.9; }
+}
+
+@keyframes wave-think {
+  0%, 100% { height: 6px; opacity: 0.24; transform: translateY(0); }
+  50% { height: 22px; opacity: 0.82; transform: translateY(-2px); }
+}
+
+@keyframes wave-speak {
+  from { height: var(--speak-low); }
+  to { height: var(--speak-high); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-wave span {
+    animation: none !important;
+    height: 10px;
+  }
+}

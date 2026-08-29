@@ -1,0 +1,13 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+SQLAlchemy==2.0.43
+alembic==1.16.5
+pydantic==2.12.5
+google-genai==2.20.0
+python-dotenv==1.1.1
+google-api-python-client==2.199.0
+google-auth==2.57.0
+google-auth-oauthlib==1.4.1
+google-auth-httplib2==0.4.2
+cryptography==50.0.1
+piper-tts==1.7.0

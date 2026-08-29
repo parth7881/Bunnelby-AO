@@ -1,0 +1,231 @@
+.ao-mark {
+  --ao-mark-size: 88px;
+  position: relative;
+  width: var(--ao-mark-size);
+  height: var(--ao-mark-size);
+  display: inline-grid;
+  place-items: center;
+  color: var(--ao-cyan);
+  filter: drop-shadow(0 0 12px rgba(97, 231, 255, 0.22));
+  transform-origin: center;
+}
+
+.ao-mark__svg {
+  position: relative;
+  z-index: 2;
+  display: block;
+  overflow: visible;
+}
+
+.ao-mark__stroke {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 4.1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ao-mark__halo {
+  position: absolute;
+  inset: 50%;
+  border: 1px solid rgba(97, 231, 255, 0.18);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.ao-mark__halo--inner {
+  width: 112%;
+  height: 112%;
+  border-color: rgba(66, 229, 198, 0.2);
+}
+
+.ao-mark__halo--outer {
+  width: 145%;
+  height: 145%;
+  border-color: rgba(97, 231, 255, 0.11);
+}
+
+.ao-mark--idle {
+  animation: ao-idle-breathe 4.8s var(--ao-ease) infinite;
+}
+
+.ao-mark--idle .ao-mark__stroke--bridge {
+  opacity: 0.68;
+}
+
+.ao-mark--idle .ao-mark__halo--inner {
+  animation: ao-halo-breathe 4.8s var(--ao-ease) infinite;
+}
+
+.ao-mark--listening .ao-mark__stroke--rise {
+  animation: ao-listen-rise 820ms var(--ao-ease-emph) infinite alternate;
+}
+
+.ao-mark--listening .ao-mark__stroke--bridge {
+  animation: ao-listen-bridge 620ms var(--ao-ease-emph) infinite alternate;
+}
+
+.ao-mark--listening .ao-mark__stroke--loop {
+  animation: ao-listen-loop 940ms var(--ao-ease-emph) infinite alternate;
+}
+
+.ao-mark--listening .ao-mark__halo--inner {
+  animation: ao-listen-halo 1100ms ease-in-out infinite;
+}
+
+.ao-mark--thinking .ao-mark__stroke {
+  stroke-dasharray: 0.22 0.78;
+  animation: ao-trace 1.18s linear infinite;
+}
+
+.ao-mark--thinking .ao-mark__stroke--bridge {
+  animation-delay: -390ms;
+}
+
+.ao-mark--thinking .ao-mark__stroke--loop {
+  animation-delay: -780ms;
+}
+
+.ao-mark--thinking .ao-mark__halo--outer {
+  animation: ao-scan-ring 1.55s linear infinite;
+}
+
+.ao-mark--speaking {
+  color: #8af5ff;
+  filter: drop-shadow(0 0 16px rgba(97, 231, 255, 0.46));
+  animation: ao-speaking-body 760ms ease-in-out infinite alternate;
+}
+
+.ao-mark--speaking .ao-mark__stroke--rise {
+  animation: ao-speak-rise 420ms ease-in-out infinite alternate;
+}
+
+.ao-mark--speaking .ao-mark__stroke--bridge {
+  animation: ao-speak-bridge 310ms ease-in-out infinite alternate;
+}
+
+.ao-mark--speaking .ao-mark__stroke--loop {
+  animation: ao-speak-loop 510ms ease-in-out infinite alternate;
+}
+
+.ao-mark--speaking .ao-mark__halo--inner {
+  border-color: rgba(97, 231, 255, 0.42);
+  box-shadow: 0 0 28px rgba(97, 231, 255, 0.18);
+  animation: ao-speaking-ring 680ms ease-in-out infinite;
+}
+
+.ao-mark--speaking .ao-mark__halo--outer {
+  border-color: rgba(66, 229, 198, 0.26);
+  animation: ao-speaking-ring 980ms ease-in-out infinite reverse;
+}
+
+.ao-mark--wake {
+  animation: ao-wake-arrive 820ms var(--ao-ease-emph) both;
+}
+
+.ao-mark--wake .ao-mark__stroke {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: ao-wake-draw 640ms var(--ao-ease-emph) forwards;
+}
+
+.ao-mark--wake .ao-mark__stroke--bridge { animation-delay: 80ms; }
+.ao-mark--wake .ao-mark__stroke--loop { animation-delay: 150ms; }
+
+@keyframes ao-idle-breathe {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.018); opacity: 1; }
+}
+
+@keyframes ao-halo-breathe {
+  0%, 100% { transform: translate(-50%, -50%) scale(0.98); opacity: 0.55; }
+  50% { transform: translate(-50%, -50%) scale(1.06); opacity: 0.9; }
+}
+
+@keyframes ao-listen-rise {
+  from { transform: translateY(2px) scaleY(0.93); opacity: 0.72; }
+  to { transform: translateY(-2px) scaleY(1.08); opacity: 1; }
+}
+
+@keyframes ao-listen-bridge {
+  from { transform: scaleX(0.89); opacity: 0.55; }
+  to { transform: scaleX(1.08); opacity: 1; }
+}
+
+@keyframes ao-listen-loop {
+  from { transform: translateX(-1px) scale(0.975); opacity: 0.7; }
+  to { transform: translateX(1px) scale(1.025); opacity: 1; }
+}
+
+@keyframes ao-listen-halo {
+  0%, 100% { transform: translate(-50%, -50%) scale(0.96); opacity: 0.45; }
+  50% { transform: translate(-50%, -50%) scale(1.11); opacity: 1; }
+}
+
+@keyframes ao-trace {
+  from { stroke-dashoffset: 1; opacity: 0.6; }
+  40% { opacity: 1; }
+  to { stroke-dashoffset: 0; opacity: 0.6; }
+}
+
+@keyframes ao-scan-ring {
+  from { transform: translate(-50%, -50%) rotate(0deg) scale(0.96); opacity: 0.25; }
+  50% { opacity: 0.76; }
+  to { transform: translate(-50%, -50%) rotate(360deg) scale(1.04); opacity: 0.25; }
+}
+
+@keyframes ao-speaking-body {
+  from { transform: scale(0.985); }
+  to { transform: scale(1.035); }
+}
+
+@keyframes ao-speak-rise {
+  from { transform: translateY(3px) scaleY(0.88); }
+  to { transform: translateY(-3px) scaleY(1.13); }
+}
+
+@keyframes ao-speak-bridge {
+  from { transform: scaleX(0.82); opacity: 0.55; }
+  to { transform: scaleX(1.16); opacity: 1; }
+}
+
+@keyframes ao-speak-loop {
+  from { transform: scale(0.95) translateX(-1.5px); }
+  to { transform: scale(1.05) translateX(1.5px); }
+}
+
+@keyframes ao-speaking-ring {
+  0%, 100% { transform: translate(-50%, -50%) scale(0.9); opacity: 0.38; }
+  50% { transform: translate(-50%, -50%) scale(1.18); opacity: 1; }
+}
+
+@keyframes ao-wake-arrive {
+  0% { transform: scale(0.9); opacity: 0; }
+  58% { transform: scale(1.05); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes ao-wake-draw { to { stroke-dashoffset: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ao-mark,
+  .ao-mark__stroke,
+  .ao-mark__halo {
+    animation: none !important;
+    transform: none !important;
+  }
+
+  .ao-mark__halo {
+    transform: translate(-50%, -50%) !important;
+  }
+
+  .ao-mark--thinking .ao-mark__stroke,
+  .ao-mark--wake .ao-mark__stroke {
+    stroke-dasharray: none;
+    stroke-dashoffset: 0;
+  }
+}
