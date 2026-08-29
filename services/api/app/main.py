@@ -15,8 +15,8 @@ from .approval_service import (
     reject_approval,
 )
 from .database import SessionLocal
+from .message_dispatch import handle_message_result
 from .models import Message
-from .orchestrator import handle_message_result
 from .schemas import (
     ApprovalDecisionResponse,
     ApprovalResponse,
@@ -110,7 +110,7 @@ def approve(approval_id: int) -> ApprovalDecisionResponse:
     if result.outcome == "sent":
         spoken_reply = "भेज दिया, सर।" if language == "hi" else "Sent, sir."
     elif result.outcome == "already_sent":
-        spoken_reply = "यह जवाब पहले ही भेजा जा चुका है।" if language == "hi" else "That reply was already sent."
+        spoken_reply = "यह ईमेल पहले ही भेजा जा चुका है।" if language == "hi" else "That email was already sent."
     elif result.outcome == "failed":
         spoken_reply = "ईमेल नहीं भेजा गया। स्क्रीन पर अगला कदम देखें।" if language == "hi" else "The email was not sent. Check the screen for the next step."
     elif result.outcome == "unknown":
