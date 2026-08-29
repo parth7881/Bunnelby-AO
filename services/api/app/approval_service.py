@@ -71,17 +71,22 @@ def _payload(approval: Approval) -> dict[str, Any]:
 
 
 def _validate_gmail_snapshot(approval: Approval, payload: dict[str, Any]) -> None:
-    if approval.task_type != "gmail_reply":
-        raise ApprovalPayloadError("Approval is not a Gmail reply action.")
+    if approval.task_type not in {"gmail_reply", "gmail_compose"}:
+        raise ApprovalPayloadError("Approval is not a supported Gmail send action.")
 
-    required = ("thread_id", "source_message_id", "recipient", "subject", "draft_body")
+    mode = str(payload.get("mode", "reply")).strip().casefold() or "reply"
+    required = ["recipient", "subject", "draft_body"]
+    if mode == "reply":
+        required.extend(["thread_id", "source_message_id"])
+    elif mode != "compose":
+        raise ApprovalPayloadError("Stored Gmail approval mode is invalid.")
+
     missing = [key for key in required if not str(payload.get(key, "")).strip()]
     if missing:
         raise ApprovalPayloadError(
             "Stored Gmail approval payload is missing required fields: " + ", ".join(missing)
         )
 
-    # The preview displayed to the human is the exact body that must cross the send boundary.
     if str(payload.get("draft_body", "")) != approval.preview_content:
         raise ApprovalPayloadError(
             "Stored Gmail draft no longer matches the approved preview. Refusing to send."
@@ -92,25 +97,32 @@ def _validate_gmail_snapshot(approval: Approval, payload: dict[str, Any]) -> Non
         )
 
 
-def create_gmail_reply_approval(
+def _create_gmail_approval(
     draft: dict[str, str],
     *,
+    task_type: Literal["gmail_reply", "gmail_compose"],
     spoken_language: str,
     db: Session | None = None,
 ) -> Approval:
-    """Persist the exact Gmail draft snapshot that the human will approve."""
     owns_session = db is None
     session = db or SessionLocal()
     try:
         recipient = str(draft.get("to", "")).strip()
         subject = str(draft.get("subject", "")).strip()
         body = str(draft.get("body", "")).strip()
+        mode = str(draft.get("mode", "reply" if task_type == "gmail_reply" else "compose")).strip()
         thread_id = str(draft.get("thread_id", "")).strip()
         source_message_id = str(draft.get("source_message_id", "")).strip()
-        if not all((recipient, subject, body, thread_id, source_message_id)):
+
+        if not all((recipient, subject, body)):
             raise ApprovalPayloadError("Gmail draft is incomplete and cannot be approved.")
+        if mode == "reply" and not all((thread_id, source_message_id)):
+            raise ApprovalPayloadError("Gmail reply draft is incomplete and cannot be approved.")
+        if mode not in {"reply", "compose"}:
+            raise ApprovalPayloadError("Gmail draft mode is invalid.")
 
         payload = {
+            "mode": mode,
             "thread_id": thread_id,
             "source_message_id": source_message_id,
             "source_rfc_message_id": str(draft.get("source_rfc_message_id", "")).strip(),
@@ -124,7 +136,7 @@ def create_gmail_reply_approval(
         }
 
         approval = Approval(
-            task_type="gmail_reply",
+            task_type=task_type,
             preview_content=body,
             target=recipient,
             status="pending",
@@ -142,6 +154,36 @@ def create_gmail_reply_approval(
     finally:
         if owns_session:
             session.close()
+
+
+def create_gmail_reply_approval(
+    draft: dict[str, str],
+    *,
+    spoken_language: str,
+    db: Session | None = None,
+) -> Approval:
+    """Persist the exact Gmail reply snapshot that the human will approve."""
+    return _create_gmail_approval(
+        draft,
+        task_type="gmail_reply",
+        spoken_language=spoken_language,
+        db=db,
+    )
+
+
+def create_gmail_compose_approval(
+    draft: dict[str, str],
+    *,
+    spoken_language: str,
+    db: Session | None = None,
+) -> Approval:
+    """Persist the exact standalone Gmail message that the human will approve."""
+    return _create_gmail_approval(
+        draft,
+        task_type="gmail_compose",
+        spoken_language=spoken_language,
+        db=db,
+    )
 
 
 def get_approval(approval_id: int, *, db: Session | None = None) -> Approval:
@@ -168,7 +210,6 @@ def approval_spoken_language(approval: Approval) -> str:
 
 
 def approval_public_dict(approval: Approval) -> dict[str, Any]:
-    payload: dict[str, Any]
     try:
         payload = _payload(approval)
     except ApprovalPayloadError:
@@ -231,34 +272,22 @@ def _mark_execution_failure(
 
 
 def send_approved_email(approval_id: int) -> ApprovalExecutionResult:
-    """The ONLY production Gmail send boundary.
-
-    SECURITY ENFORCEMENT:
-    1) the approval row must still have status='approved';
-    2) execution_state must atomically transition not_started -> executing;
-    3) executed_at must still be NULL;
-    4) the immutable stored payload must match the preview and target.
-
-    Only after all four conditions pass is gmail_service._send_reply_payload() called.
-    Duplicate or concurrent calls cannot acquire the same execution claim twice.
-    """
+    """The ONLY production Gmail send boundary for approved reply/compose actions."""
     with SessionLocal() as db:
         existing = db.get(Approval, approval_id)
         if existing is None:
             raise ApprovalNotFoundError(f"Approval {approval_id} was not found.")
-        if existing.task_type != "gmail_reply":
-            raise ApprovalConflictError("This approval is not a Gmail reply action.")
+        if existing.task_type not in {"gmail_reply", "gmail_compose"}:
+            raise ApprovalConflictError("This approval is not a Gmail send action.")
         if existing.status != "approved":
             raise ApprovalConflictError(
                 f"Gmail send requires status=approved; current status is {existing.status}."
             )
 
-        # Validate the immutable human-reviewed snapshot before acquiring execution ownership.
         payload = _payload(existing)
         _validate_gmail_snapshot(existing, payload)
         snapshot = dict(payload)
 
-        # SECURITY + IDEMPOTENCY BOUNDARY: one transaction wins this conditional update.
         claim = db.execute(
             update(Approval)
             .where(
@@ -277,13 +306,13 @@ def send_approved_email(approval_id: int) -> ApprovalExecutionResult:
                 return ApprovalExecutionResult(
                     approval=current,
                     outcome="already_sent",
-                    message="This approved Gmail reply was already sent. No duplicate was created.",
+                    message="This approved Gmail message was already sent. No duplicate was created.",
                 )
             if current.execution_state == "executing":
                 return ApprovalExecutionResult(
                     approval=current,
                     outcome="already_processing",
-                    message="This approved Gmail reply is already being processed.",
+                    message="This approved Gmail message is already being processed.",
                 )
             if current.execution_state == "unknown":
                 return ApprovalExecutionResult(
@@ -298,39 +327,26 @@ def send_approved_email(approval_id: int) -> ApprovalExecutionResult:
                 return ApprovalExecutionResult(
                     approval=current,
                     outcome="failed",
-                    message="The approved Gmail reply previously failed and was not retried automatically.",
+                    message="The approved Gmail message previously failed and was not retried automatically.",
                 )
             raise ApprovalConflictError("This Gmail approval cannot acquire execution ownership.")
 
         _reload(db, approval_id)
 
     try:
-        # NO Gmail send call exists before the status+claim+snapshot guards above.
         gmail_result = _send_reply_payload(snapshot)
     except (GmailAuthorizationError, GmailConfigurationError, GmailRateLimitError) as exc:
         failed = _mark_execution_failure(approval_id, state="failed", error=str(exc))
-        return ApprovalExecutionResult(
-            approval=failed,
-            outcome="failed",
-            message=str(exc),
-        )
+        return ApprovalExecutionResult(failed, "failed", str(exc))
     except GmailSendUncertainError as exc:
         unknown = _mark_execution_failure(approval_id, state="unknown", error=str(exc))
-        return ApprovalExecutionResult(
-            approval=unknown,
-            outcome="unknown",
-            message=str(exc),
-        )
+        return ApprovalExecutionResult(unknown, "unknown", str(exc))
     except GmailServiceError as exc:
-        # Be conservative: after a generic Gmail send-path error, do not auto-retry.
         unknown = _mark_execution_failure(approval_id, state="unknown", error=str(exc))
         return ApprovalExecutionResult(
-            approval=unknown,
-            outcome="unknown",
-            message=(
-                "Gmail did not provide a safe send confirmation. Bunnelby will not retry "
-                "automatically because that could create a duplicate."
-            ),
+            unknown,
+            "unknown",
+            "Gmail did not provide a safe send confirmation. Bunnelby will not retry automatically because that could create a duplicate.",
         )
     except Exception as exc:
         logger.exception("Unexpected Gmail send failure for approval_id=%s", approval_id)
@@ -340,24 +356,21 @@ def send_approved_email(approval_id: int) -> ApprovalExecutionResult:
             error=f"{type(exc).__name__}: {exc}",
         )
         return ApprovalExecutionResult(
-            approval=unknown,
-            outcome="unknown",
-            message=(
-                "The Gmail send result is uncertain. Bunnelby will not retry automatically "
-                "because that could create a duplicate."
-            ),
+            unknown,
+            "unknown",
+            "The Gmail send result is uncertain. Bunnelby will not retry automatically because that could create a duplicate.",
         )
 
     message_id = str(gmail_result.get("id", "")).strip()
     thread_id = str(gmail_result.get("threadId", snapshot.get("thread_id", ""))).strip()
+    is_compose = str(snapshot.get("mode", "reply")).strip().casefold() == "compose"
+    success_message = "Email sent successfully." if is_compose else "Reply sent successfully."
     completion = {
-        "message": "Reply sent successfully.",
+        "message": success_message,
         "gmail_message_id": message_id,
         "gmail_thread_id": thread_id,
     }
 
-    # If this final DB write fails after Gmail accepted the message, the row remains
-    # executing. That intentionally blocks automatic retries and therefore avoids double-send.
     try:
         with SessionLocal() as db:
             finalized = db.execute(
@@ -379,22 +392,14 @@ def send_approved_email(approval_id: int) -> ApprovalExecutionResult:
             if finalized.rowcount != 1:
                 current = _reload(db, approval_id)
                 return ApprovalExecutionResult(
-                    approval=current,
-                    outcome="unknown",
-                    message=(
-                        "Gmail reported success, but local completion recording was inconsistent. "
-                        "Bunnelby will not send again automatically."
-                    ),
+                    current,
+                    "unknown",
+                    "Gmail reported success, but local completion recording was inconsistent. Bunnelby will not send again automatically.",
                 )
             current = _reload(db, approval_id)
-            return ApprovalExecutionResult(
-                approval=current,
-                outcome="sent",
-                message="Reply sent successfully.",
-            )
+            return ApprovalExecutionResult(current, "sent", success_message)
     except Exception:
         logger.exception("Gmail sent but local finalization failed for approval_id=%s", approval_id)
-        # Do not issue another send. If possible leave/restore an unknown marker.
         try:
             current = _mark_execution_failure(
                 approval_id,
@@ -404,12 +409,9 @@ def send_approved_email(approval_id: int) -> ApprovalExecutionResult:
         except Exception:
             current = get_approval(approval_id)
         return ApprovalExecutionResult(
-            approval=current,
-            outcome="unknown",
-            message=(
-                "Gmail reported success, but local confirmation could not be finalized. "
-                "Bunnelby will not retry automatically."
-            ),
+            current,
+            "unknown",
+            "Gmail reported success, but local confirmation could not be finalized. Bunnelby will not retry automatically.",
         )
 
 
@@ -436,7 +438,6 @@ def approve_and_execute(approval_id: int) -> ApprovalExecutionResult:
         elif approval.status != "approved":
             raise ApprovalConflictError(f"Unsupported approval status: {approval.status}")
 
-    # Safe even when two approve requests race: send_approved_email has the atomic claim.
     return send_approved_email(approval_id)
 
 
@@ -447,11 +448,12 @@ def reject_approval(approval_id: int) -> ApprovalExecutionResult:
         if approval is None:
             raise ApprovalNotFoundError(f"Approval {approval_id} was not found.")
 
+        label = "Gmail message" if approval.task_type == "gmail_compose" else "Gmail reply"
         if approval.status == "rejected":
             return ApprovalExecutionResult(
                 approval=approval,
                 outcome="rejected",
-                message="The Gmail reply remains rejected. Nothing was sent.",
+                message=f"The {label} remains rejected. Nothing was sent.",
             )
         if approval.status == "approved":
             raise ApprovalConflictError("This action was already approved and cannot be rejected now.")
@@ -474,7 +476,7 @@ def reject_approval(approval_id: int) -> ApprovalExecutionResult:
                 return ApprovalExecutionResult(
                     approval=current,
                     outcome="rejected",
-                    message="The Gmail reply was rejected. Nothing was sent.",
+                    message=f"The {label} was rejected. Nothing was sent.",
                 )
             raise ApprovalConflictError("This approval could not be rejected safely.")
 
@@ -482,5 +484,5 @@ def reject_approval(approval_id: int) -> ApprovalExecutionResult:
         return ApprovalExecutionResult(
             approval=current,
             outcome="rejected",
-            message="The Gmail reply was rejected. Nothing was sent.",
+            message=f"The {label} was rejected. Nothing was sent.",
         )
