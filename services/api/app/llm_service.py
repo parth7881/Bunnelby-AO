@@ -111,7 +111,11 @@ def clear_gemini_cooldown() -> None:
         _gemini_last_failure = ""
 
 
-def _gemini_generate(system_instruction: str, user_content: str, temperature: float = 0.35) -> LLMResult:
+def _gemini_generate(
+    system_instruction: str,
+    user_content: str,
+    temperature: float = 0.35,
+) -> LLMResult:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise LLMConfigurationError("GEMINI_API_KEY is not configured.")
@@ -164,12 +168,18 @@ def generate_gemini_text(
     user_content: str,
     temperature: float = 0.35,
 ) -> LLMResult:
-    """Gemini-only generation for flows that explicitly forbid provider failover.
+    """Legacy Gemini-first entry point with Groq failover.
 
-    This intentionally does not fall back to Groq. It is used by flows whose product
-    contract explicitly requires Gemini for generation.
+    Prompt 7 originally used this function as Gemini-only for Gmail drafting.
+    Bunnelby's free-tier reliability policy now allows the same Gemini→Groq
+    failover used by normal chat and Gmail summarization. Approval and send
+    safety remain completely independent from model-provider selection.
     """
-    return _gemini_generate(system_instruction, user_content, temperature=temperature)
+    return generate_text(
+        system_instruction=system_instruction,
+        user_content=user_content,
+        temperature=temperature,
+    )
 
 
 def generate_groq_text(
@@ -247,7 +257,11 @@ def generate_text(
 
     if gemini_key and not gemini_cooldown_active():
         try:
-            result = _gemini_generate(system_instruction, user_content)
+            result = _gemini_generate(
+                system_instruction,
+                user_content,
+                temperature=temperature,
+            )
             # Successful primary response means any previous cooldown can be cleared.
             clear_gemini_cooldown()
             logger.info("AO LLM provider=gemini model=%s", result.model)
