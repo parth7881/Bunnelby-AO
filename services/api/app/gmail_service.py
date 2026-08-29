@@ -499,6 +499,16 @@ def resolve_reply_thread(user_message: str) -> str:
     query_tokens = _normalize_tokens(hint or user_message)
     wants_latest = bool(re.search(r"\b(?:latest|recent|newest|last)\b", lower))
 
+    # A command such as "reply to my latest email and say ..." explicitly identifies
+    # the first inbox result. Draft-body words after "say"/"tell" are instructions,
+    # not target-selection evidence, so they must not make the target look ambiguous.
+    if wants_latest and not hint and not explicit_email:
+        selected = emails[0]
+        thread_id = selected.get("thread_id", "").strip()
+        if not thread_id:
+            raise GmailTargetResolutionError("The selected Gmail message has no usable thread id.")
+        return thread_id
+
     best: tuple[float, dict[str, str]] | None = None
     for index, email in enumerate(emails):
         sender = email.get("sender", "")
@@ -523,11 +533,7 @@ def resolve_reply_thread(user_message: str) -> str:
     assert best is not None
     best_score, selected = best
 
-    # "reply to the latest email" is intentionally allowed without a named target.
-    no_specific_target = not hint and not explicit_email and not query_tokens
-    if no_specific_target and wants_latest:
-        selected = emails[0]
-    elif best_score < 2.0:
+    if best_score < 2.0:
         raise GmailTargetResolutionError(
             "I couldn't safely determine which email thread you mean. Mention the sender or subject."
         )
@@ -707,8 +713,8 @@ def draft_reply(thread_id: str, instruction: str) -> dict[str, str]:
     )
 
     try:
-        # Prompt 7 deliberately uses Gemini only for drafting. Existing Gemini→Groq
-        # failover remains unchanged for normal chat and Gmail summarization.
+        # Gemini remains primary; the shared generation service falls back to Groq
+        # when Gemini is quota-limited or temporarily unavailable.
         result = generate_gemini_text(
             system_instruction=DRAFT_SYSTEM_INSTRUCTION,
             user_content=user_content,
@@ -716,16 +722,18 @@ def draft_reply(thread_id: str, instruction: str) -> dict[str, str]:
         )
     except LLMConfigurationError as exc:
         raise GmailConfigurationError(
-            "Gemini is not configured, so Bunnelby cannot draft the Gmail reply."
+            "No configured AI provider is available to draft the Gmail reply."
         ) from exc
     except LLMServiceError as exc:
-        raise GmailDraftError("Gemini could not draft the reply right now. Please retry.") from exc
+        raise GmailDraftError(
+            "The AI drafting providers could not create the reply right now. Please retry."
+        ) from exc
 
     body = result.text.strip()
     body = re.sub(r"^```(?:text)?\s*", "", body, flags=re.IGNORECASE)
     body = re.sub(r"\s*```$", "", body).strip()
     if not body:
-        raise GmailDraftError("Gemini returned an empty Gmail draft.")
+        raise GmailDraftError("The AI provider returned an empty Gmail draft.")
     if len(body) > 12000:
         raise GmailDraftError("The generated Gmail draft is unexpectedly long.")
 
@@ -739,7 +747,7 @@ def draft_reply(thread_id: str, instruction: str) -> dict[str, str]:
         "subject": context["subject"],
         "body": body,
         "instruction": instruction,
-        "provider": "gemini",
+        "provider": result.provider,
         "status": "draft",
     }
 
