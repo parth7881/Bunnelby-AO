@@ -15,7 +15,7 @@ from .approval_service import (
     reject_approval,
 )
 from .database import SessionLocal
-from .message_dispatch import handle_message_result
+from .intelligence_dispatch import handle_message_result
 from .models import Message
 from .schemas import (
     ApprovalDecisionResponse,
@@ -34,7 +34,7 @@ from .tts_service import (
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Bunnelby API", version="0.4.0")
+app = FastAPI(title="Bunnelby API", version="0.5.0")
 
 app.add_middleware(
     CORSMiddleware,
