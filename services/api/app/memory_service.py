@@ -35,14 +35,22 @@ _STOPWORDS: Final[frozenset[str]] = frozenset(
     }
 )
 
+# True operational/error responses remain excluded from conversational memory. Tool results
+# such as Gmail summaries and Calendar availability are safe to remember after their
+# internal Route/Why metadata is stripped.
 _OPERATIONAL_ASSISTANT_MARKERS: Final[tuple[str, ...]] = (
-    "\nRoute:",
     "This would call the ",
     "AO's Gemini router hit the free-tier rate limit",
     "My cloud AI providers are temporarily unavailable",
     "I can't access a cloud language model yet",
     "AO could not classify that request right now",
     "AO could not resolve this ambiguous tool request",
+    "Bunnelby could not classify that request right now",
+    "Bunnelby could not resolve this ambiguous tool request",
+)
+
+_ROUTE_METADATA_LINE: Final[re.Pattern[str]] = re.compile(
+    r"(?im)^\s*(?:Route|Why):\s*[^\n]*\n?"
 )
 
 
@@ -118,8 +126,17 @@ def load_user_profile() -> UserProfile:
     )
 
 
+def _sanitize_assistant_memory(content: str) -> str:
+    """Remove internal router metadata while preserving user-visible tool outcomes."""
+    cleaned = _ROUTE_METADATA_LINE.sub("", content).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned
+
+
 def _assistant_is_memory_safe(content: str) -> bool:
-    return not any(marker.lower() in content.lower() for marker in _OPERATIONAL_ASSISTANT_MARKERS)
+    return bool(content.strip()) and not any(
+        marker.lower() in content.lower() for marker in _OPERATIONAL_ASSISTANT_MARKERS
+    )
 
 
 def _clip(text: str) -> str:
@@ -130,7 +147,7 @@ def _clip(text: str) -> str:
 
 
 def _rows_to_safe_turns(rows: list[Message]) -> list[MemoryTurn]:
-    """Pair user/assistant rows and omit tool/debug/error turns from general memory."""
+    """Pair user/assistant rows, retaining safe tool results without internal routing metadata."""
     turns: list[MemoryTurn] = []
     pending_user: Message | None = None
 
@@ -145,13 +162,14 @@ def _rows_to_safe_turns(rows: list[Message]) -> list[MemoryTurn]:
             continue
 
         if role == "assistant" and pending_user is not None:
-            if _assistant_is_memory_safe(content):
+            safe_content = _sanitize_assistant_memory(content)
+            if _assistant_is_memory_safe(safe_content):
                 turns.append(
                     MemoryTurn(
                         user_id=int(pending_user.id),
                         assistant_id=int(row.id),
                         user=_clip(str(pending_user.content)),
-                        assistant=_clip(content),
+                        assistant=_clip(safe_content),
                     )
                 )
             pending_user = None
@@ -189,7 +207,7 @@ def _turn_relevance(query_terms: set[str], turn: MemoryTurn) -> float:
     assistant_terms = _terms(turn.assistant)
     user_overlap = len(query_terms & user_terms)
     assistant_overlap = len(query_terms & assistant_terms)
-    # User-authored facts receive more weight than AO-authored prose.
+    # User-authored facts receive more weight than Bunnelby-authored prose.
     return (user_overlap * 2.0) + assistant_overlap
 
 
@@ -236,7 +254,7 @@ def build_memory_context(current_user_message: str) -> str:
     if recent_turns:
         sections.extend(
             [
-                "\nRECENT GENERAL CONVERSATION (oldest to newest):",
+                "\nRECENT CONVERSATION AND TOOL RESULTS (oldest to newest):",
                 _format_turns(recent_turns),
             ]
         )
@@ -252,8 +270,11 @@ def build_memory_context(current_user_message: str) -> str:
     sections.append(
         "\nMemory rules: Prefer the current user message over older conversation. "
         "For stable identity, prefer the local profile. Treat user-authored statements as "
-        "stronger evidence than old Bunnelby-authored statements. Do not mention these memory "
-        "mechanics unless the user asks about memory."
+        "stronger evidence than old Bunnelby-authored statements. Safe Gmail/Calendar/tool "
+        "results in recent conversation are valid conversational memory. For temporal recap "
+        "questions such as 'what did we last do', 'last kya kaam kiya', or 'most recent work', "
+        "answer from the newest recent turns first and do not substitute older topic matches. "
+        "Do not mention these memory mechanics unless the user asks about memory."
     )
     return "\n".join(sections)
 
