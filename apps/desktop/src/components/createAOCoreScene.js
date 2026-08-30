@@ -329,15 +329,63 @@ function createNucleus(root, glowTexture) {
   glow.renderOrder = 20;
   assembly.add(glow);
 
+  // Dedicated white-hot source restores the original sun-like focal point. It is a
+  // separate additive layer so lattice/occluder geometry can never visually erase it.
+  const sunSourceMaterial = new THREE.SpriteMaterial({
+    map: glowTexture,
+    color: 0xfff6cf,
+    transparent: true,
+    opacity: 1,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    depthTest: false,
+    toneMapped: false
+  });
+  const sunSource = new THREE.Sprite(sunSourceMaterial);
+  sunSource.scale.setScalar(0.68);
+  sunSource.renderOrder = 30;
+  assembly.add(sunSource);
+
+  const coronaMaterial = new THREE.SpriteMaterial({
+    map: glowTexture,
+    color: 0xff9f2f,
+    transparent: true,
+    opacity: 0.72,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    depthTest: false,
+    toneMapped: false
+  });
+  const corona = new THREE.Sprite(coronaMaterial);
+  corona.scale.setScalar(1.18);
+  corona.renderOrder = 29;
+  assembly.add(corona);
+
   const hotPointMaterial = glowMaterial.clone();
   hotPointMaterial.color.setHex(AO_CORE_PALETTE.white);
   hotPointMaterial.opacity = 0.9;
   const hotPoint = new THREE.Sprite(hotPointMaterial);
   hotPoint.scale.setScalar(0.36);
-  hotPoint.renderOrder = 21;
+  hotPoint.renderOrder = 31;
   assembly.add(hotPoint);
 
-  return { assembly, core, coreMaterial, lattice, latticeMaterial, innerLattice, innerLatticeMaterial, glow, glowMaterial, hotPoint, hotPointMaterial };
+  return {
+    assembly,
+    core,
+    coreMaterial,
+    lattice,
+    latticeMaterial,
+    innerLattice,
+    innerLatticeMaterial,
+    glow,
+    glowMaterial,
+    sunSource,
+    sunSourceMaterial,
+    corona,
+    coronaMaterial,
+    hotPoint,
+    hotPointMaterial
+  };
 }
 
 function createWaveShells(root, color) {
@@ -552,6 +600,23 @@ export function createAOCoreScene(container, initialProps = {}) {
     nucleus.glowMaterial.opacity = 0.72 + stateMix.listening * 0.03 + stateMix.thinking * 0.18 + stateMix.speaking * (0.08 + smoothedAudio * 0.18);
     const glowScale = 1.82 + stateMix.thinking * 0.22 + stateMix.speaking * (0.18 + smoothedAudio * 0.42);
     nucleus.glow.scale.setScalar(glowScale);
+
+    const sunPulse = reducedMotion ? 1 : 1 + Math.sin(elapsed * 1.72) * 0.035;
+    nucleus.sunSourceMaterial.opacity = Math.min(
+      1,
+      0.94 + stateMix.thinking * 0.04 + stateMix.speaking * (0.03 + smoothedAudio * 0.08)
+    );
+    nucleus.sunSource.scale.setScalar(
+      (0.66 + stateMix.listening * 0.025 + stateMix.thinking * 0.08 + stateMix.speaking * (0.08 + smoothedAudio * 0.16)) * sunPulse
+    );
+    nucleus.coronaMaterial.opacity = Math.min(
+      0.94,
+      0.66 + stateMix.listening * 0.05 + stateMix.thinking * 0.13 + stateMix.speaking * (0.1 + smoothedAudio * 0.18)
+    );
+    nucleus.corona.scale.setScalar(
+      (1.12 + stateMix.thinking * 0.16 + stateMix.speaking * (0.12 + smoothedAudio * 0.28)) * sunPulse
+    );
+
     nucleus.hotPointMaterial.opacity = Math.min(1, 0.92 + stateMix.listening * 0.02 + stateMix.thinking * 0.06 + stateMix.speaking * (0.06 + smoothedAudio * 0.08));
     nucleus.hotPoint.scale.setScalar(0.34 + stateMix.listening * 0.015 + stateMix.thinking * 0.04 + stateMix.speaking * (0.08 + smoothedAudio * 0.2));
 
