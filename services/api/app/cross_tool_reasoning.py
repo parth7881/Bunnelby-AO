@@ -42,6 +42,7 @@ ToolName = Literal["gmail.read", "calendar.read"]
 StepStatus = Literal["success", "failed"]
 
 MAX_GMAIL_ITEMS: Final[int] = 10
+MAX_GMAIL_SCAN_ITEMS: Final[int] = 50
 MAX_PLANNER_ATTEMPTS: Final[int] = 3
 PLANNER_BACKOFF_BASE_SECONDS: Final[float] = 0.8
 
@@ -60,6 +61,7 @@ _WRITE_CUE_RE: Final[re.Pattern[str]] = re.compile(
     r"reschedule|cancel|move\s+(?:the\s+)?meeting)\b",
     re.IGNORECASE,
 )
+_TODAY_RE: Final[re.Pattern[str]] = re.compile(r"\btoday(?:['’]s)?\b", re.IGNORECASE)
 
 PLANNER_SYSTEM_INSTRUCTION: Final[str] = """
 You are Bunnelby's cross-tool planner. Convert one user request that needs BOTH Gmail and
@@ -282,9 +284,35 @@ def plan_cross_tool_request(user_message: str) -> CrossToolPlan:
     return _deterministic_plan(user_message)
 
 
+def _parse_message_local_date(timestamp: str) -> object | None:
+    raw = timestamp.strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone().date()
+
+
 def _gmail_read_executor(instruction: str, _context: Mapping[str, object]) -> Mapping[str, object]:
     unread_only = bool(re.search(r"\bunread\b", instruction, re.IGNORECASE))
-    emails = get_unread_emails() if unread_only else get_recent_emails(max_results=MAX_GMAIL_ITEMS)
+    today_only = bool(_TODAY_RE.search(instruction))
+    if unread_only:
+        emails = get_unread_emails()
+    else:
+        emails = get_recent_emails(max_results=MAX_GMAIL_SCAN_ITEMS if today_only else MAX_GMAIL_ITEMS)
+
+    if today_only:
+        today = datetime.now().astimezone().date()
+        emails = [
+            item
+            for item in emails
+            if _parse_message_local_date(str(item.get("timestamp", ""))) == today
+        ]
+
     safe_items = [
         {
             "sender": str(item.get("sender", "Unknown sender")),
@@ -296,6 +324,7 @@ def _gmail_read_executor(instruction: str, _context: Mapping[str, object]) -> Ma
     ]
     return {
         "unread_only": unread_only,
+        "today_only": today_only,
         "count": len(safe_items),
         "emails": safe_items,
     }
@@ -318,8 +347,6 @@ def _calendar_read_executor(instruction: str, _context: Mapping[str, object]) ->
     if request.action == "create_event":
         raise CrossToolWriteNotSupportedError("Calendar creation is not allowed inside cross-tool read mode.")
     if request.action == "open_slots":
-        # Prompt 9 only needs Gmail + Calendar together; preserve read semantics without
-        # duplicating slot-enumeration logic here. Free/busy gives the grounded window.
         request = type(request)(
             action="free_busy",
             start=request.start,
@@ -348,7 +375,7 @@ def build_cross_tool_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="gmail.read",
-            description="Read recent or unread Gmail inbox messages without changing them.",
+            description="Read recent, unread, or today's Gmail inbox messages without changing them.",
             risk_level="R1",
             requires_approval=False,
             executor=_gmail_read_executor,
