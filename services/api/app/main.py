@@ -34,7 +34,7 @@ from .tts_service import (
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Bunnelby API", version="0.3.0")
+app = FastAPI(title="Bunnelby API", version="0.4.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -106,15 +106,29 @@ def approve(approval_id: int) -> ApprovalDecisionResponse:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     language = approval_spoken_language(result.approval)
+    task_type = result.approval.task_type
     spoken_reply = None
-    if result.outcome == "sent":
+
+    if result.outcome == "created" and task_type == "calendar_event":
+        spoken_reply = "इवेंट बना दिया, सर।" if language == "hi" else "Event created, sir."
+    elif result.outcome == "already_created" and task_type == "calendar_event":
+        spoken_reply = "यह इवेंट पहले ही बनाया जा चुका है।" if language == "hi" else "That event was already created."
+    elif result.outcome == "sent":
         spoken_reply = "भेज दिया, सर।" if language == "hi" else "Sent, sir."
     elif result.outcome == "already_sent":
         spoken_reply = "यह ईमेल पहले ही भेजा जा चुका है।" if language == "hi" else "That email was already sent."
     elif result.outcome == "failed":
-        spoken_reply = "ईमेल नहीं भेजा गया। स्क्रीन पर अगला कदम देखें।" if language == "hi" else "The email was not sent. Check the screen for the next step."
+        spoken_reply = (
+            "कार्रवाई पूरी नहीं हुई। स्क्रीन पर अगला कदम देखें।"
+            if language == "hi"
+            else "The action was not completed. Check the screen for the next step."
+        )
     elif result.outcome == "unknown":
-        spoken_reply = "भेजने की पुष्टि स्पष्ट नहीं है। मैं अपने आप दोबारा नहीं भेजूँगा।" if language == "hi" else "The send confirmation is uncertain. I won't retry automatically."
+        spoken_reply = (
+            "पुष्टि स्पष्ट नहीं है। मैं अपने आप दोबारा कोशिश नहीं करूँगा।"
+            if language == "hi"
+            else "The confirmation is uncertain. I won't retry automatically."
+        )
 
     return ApprovalDecisionResponse(
         approval=ApprovalResponse(**approval_public_dict(result.approval)),
@@ -139,7 +153,7 @@ def reject(approval_id: int) -> ApprovalDecisionResponse:
         approval=ApprovalResponse(**approval_public_dict(result.approval)),
         outcome="rejected",
         message=result.message,
-        spoken_reply="ड्राफ्ट खारिज कर दिया।" if language == "hi" else "Discarded.",
+        spoken_reply="कार्रवाई रद्द कर दी।" if language == "hi" else "Discarded.",
         spoken_language=language,
     )
 
