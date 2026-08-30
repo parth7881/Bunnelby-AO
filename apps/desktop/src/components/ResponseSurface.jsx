@@ -1,11 +1,26 @@
-import { useEffect, useRef } from 'react';
+import { Fragment, useEffect, useRef } from 'react';
 import ApprovalCard from './ApprovalCard';
+
+function InlineResponseText({ text }) {
+  const parts = String(text || '').split(/(\*\*[^*\n]+\*\*)/g);
+
+  return parts.map((part, index) => {
+    const isBold = part.startsWith('**') && part.endsWith('**') && part.length > 4;
+    if (!isBold) {
+      return <Fragment key={`text-${index}`}>{part}</Fragment>;
+    }
+
+    return <strong key={`strong-${index}`}>{part.slice(2, -2)}</strong>;
+  });
+}
 
 function ResponseText({ content }) {
   const sections = String(content || '').split(/\n{2,}/).filter(Boolean);
 
   return sections.map((section, index) => (
-    <p key={`${section.slice(0, 32)}-${index}`}>{section}</p>
+    <p key={`${section.slice(0, 32)}-${index}`}>
+      <InlineResponseText text={section} />
+    </p>
   ));
 }
 
