@@ -17,8 +17,23 @@ from .calendar_service import (
 )
 
 _SCHEDULE_QUERY_RE = re.compile(
-    r"\b(?:schedule|agenda|timetable|time\s+table|calendar\s+events?|events?\s+today|"
-    r"meetings?\s+today|aaj\s+ka\s+schedule|aaj\s+ki\s+meetings?)\b",
+    r"\b(?:my\s+(?:schedule|agenda|timetable|time\s+table)|"
+    r"(?:mera|meri|mere)\s+(?:aaj\s+ka\s+)?schedule|"
+    r"aaj\s+ka\s+schedule|aaj\s+ki\s+meetings?|"
+    r"today\s+my\s+(?:schedule|agenda|timetable|time\s+table)|"
+    r"(?:schedule|agenda|timetable|time\s+table)\s+(?:for\s+)?today|"
+    r"what(?:'s|\s+is)\s+(?:on\s+)?my\s+(?:schedule|agenda|calendar)|"
+    r"what\s+am\s+i\s+doing\s+today|"
+    r"what(?:'s|\s+is)\s+scheduled\s+(?:for\s+)?today|"
+    r"show\s+(?:me\s+)?(?:my\s+)?(?:schedule|agenda|timetable|time\s+table|calendar\s+events?)|"
+    r"check\s+(?:my\s+)?(?:schedule|agenda|timetable|time\s+table|calendar\s+events?)|"
+    r"list\s+(?:my\s+)?(?:calendar\s+)?events?|"
+    r"calendar\s+events?|events?\s+today|meetings?\s+today)\b",
+    re.IGNORECASE,
+)
+
+_CREATE_PREFIX_RE = re.compile(
+    r"^\s*(?:schedule|book|create|add|set\s+up)\b",
     re.IGNORECASE,
 )
 
@@ -27,8 +42,15 @@ _TOMORROW_RE = re.compile(r"\btomorrow\b", re.IGNORECASE)
 
 
 def is_agenda_request(user_message: str) -> bool:
-    """Recognize explicit requests for the user's Calendar schedule/event list."""
-    return bool(_SCHEDULE_QUERY_RE.search(user_message.strip()))
+    """Recognize Calendar agenda reads without stealing event-creation commands."""
+    text = user_message.strip()
+    if not text:
+        return False
+    # "Schedule Project Review tomorrow..." is a write request, not a request to read
+    # the user's schedule. Creation routing must retain the approval gate.
+    if _CREATE_PREFIX_RE.search(text):
+        return False
+    return bool(_SCHEDULE_QUERY_RE.search(text))
 
 
 def _resolve_agenda_date(
