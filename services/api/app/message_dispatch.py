@@ -37,6 +37,11 @@ from .gmail_service import (
     draft_new_email_from_request,
 )
 from .orchestrator import OrchestratorResult, handle_message_result as _base_handle_message_result
+from .spoken_briefing import (
+    calendar_agenda_briefing,
+    calendar_free_busy_briefing,
+    calendar_open_slots_briefing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,18 +113,7 @@ def _calendar_agenda_result(user_message: str) -> OrchestratorResult:
         start, end, _zone = agenda_range(user_message)
         events = list_events((start, end))
         reply = format_agenda_response(start, events)
-        if events:
-            spoken = (
-                f"आज आपके कैलेंडर में {len(events)} इवेंट हैं। पूरी सूची स्क्रीन पर है।"
-                if language == "hi"
-                else f"You have {len(events)} calendar event{'s' if len(events) != 1 else ''} scheduled. The full agenda is on screen."
-            )
-        else:
-            spoken = (
-                "आज आपके गूगल कैलेंडर में कोई इवेंट नहीं है।"
-                if language == "hi"
-                else "You don't have any Google Calendar events scheduled for that day."
-            )
+        spoken = calendar_agenda_briefing(start, events, language)
         return _result(
             reply,
             spoken_reply=spoken,
@@ -222,20 +216,12 @@ def _calendar_result(user_message: str) -> OrchestratorResult:
                 request.work_hours,
             )
             reply = format_open_slots_response(request, slots)
-            spoken = (
-                "मैंने उपलब्ध समय देख लिया है। विकल्प स्क्रीन पर हैं।"
-                if language == "hi"
-                else "I found the available times. The options are on screen."
-            )
+            spoken = calendar_open_slots_briefing(request, slots, language)
             return _result(reply, spoken_reply=spoken, action_type="calendar_read", route="calendar", reason="calendar open-slot lookup")
 
         busy = check_free_busy((request.start, request.end))
         reply = format_free_busy_response(request, busy)
-        spoken = (
-            "मैंने आपका कैलेंडर देख लिया है। उपलब्धता स्क्रीन पर है।"
-            if language == "hi"
-            else "I've checked your calendar. Your availability is on screen."
-        )
+        spoken = calendar_free_busy_briefing(request, busy, language)
         return _result(reply, spoken_reply=spoken, action_type="calendar_read", route="calendar", reason="calendar free-busy lookup")
 
     except CalendarParseError as exc:
