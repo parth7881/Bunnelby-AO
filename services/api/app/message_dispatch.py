@@ -61,6 +61,35 @@ _CALENDAR_TIME_RE = re.compile(
     r"morning|afternoon|evening|tonight|\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{4}-\d{1,2}-\d{1,2})\b|आज",
     re.IGNORECASE,
 )
+_TODAY_ALIAS_RE = re.compile(r"\baaj\b|आज", re.IGNORECASE)
+_IMPLICIT_TODAY_DAYPART_RE = re.compile(
+    r"\b(?:this\s+(?:morning|afternoon|evening)|tonight)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_CALENDAR_DATE_RE = re.compile(
+    r"\b(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_calendar_time_language(user_message: str) -> str:
+    """Make deterministic current-day phrases explicit before Calendar parsing.
+
+    Reads such as "this afternoon" and "tonight" have an unambiguous local date: today.
+    We normalize only the date token and preserve the daypart for the existing parser. Genuine
+    ambiguity still fails closed. Calendar writes remain protected by the exact-clock requirement.
+    """
+    text = user_message.strip()
+    if not text:
+        return text
+
+    normalized = _TODAY_ALIAS_RE.sub("today", text)
+    if _EXPLICIT_CALENDAR_DATE_RE.search(normalized):
+        return normalized
+    if _IMPLICIT_TODAY_DAYPART_RE.search(normalized):
+        return f"today {normalized}"
+    return normalized
 
 
 def _standalone_email_requested(user_message: str) -> bool:
@@ -110,7 +139,8 @@ def _result(
 def _calendar_agenda_result(user_message: str) -> OrchestratorResult:
     language = detect_spoken_language(user_message)
     try:
-        start, end, _zone = agenda_range(user_message)
+        normalized_message = _normalize_calendar_time_language(user_message)
+        start, end, _zone = agenda_range(normalized_message)
         events = list_events((start, end))
         reply = format_agenda_response(start, events)
         spoken = calendar_agenda_briefing(start, events, language)
@@ -171,7 +201,8 @@ def _calendar_agenda_result(user_message: str) -> OrchestratorResult:
 def _calendar_result(user_message: str) -> OrchestratorResult:
     language = detect_spoken_language(user_message)
     try:
-        request = parse_calendar_request(user_message)
+        normalized_message = _normalize_calendar_time_language(user_message)
+        request = parse_calendar_request(normalized_message)
 
         if request.action == "create_event":
             busy = check_free_busy((request.start, request.end))
