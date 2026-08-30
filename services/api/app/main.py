@@ -56,9 +56,14 @@ def get_db():
 def _approval_response(value) -> ApprovalResponse | None:
     if value is None:
         return None
-    if isinstance(value, dict):
-        return ApprovalResponse(**value)
-    return ApprovalResponse(**approval_public_dict(value))
+    public = dict(value) if isinstance(value, dict) else approval_public_dict(value)
+    # The current desktop App.jsx still gates approval rendering on gmail_reply.
+    # Preserve the durable task_type in SQLite; only the initial /chat transport uses
+    # this temporary compatibility value. Calendar-specific fields remain present, so
+    # ApprovalCard renders the correct Calendar UI. Approval endpoints return the real type.
+    if public.get("task_type") in {"gmail_compose", "calendar_event"}:
+        public["task_type"] = "gmail_reply"
+    return ApprovalResponse(**public)
 
 
 @app.post("/chat", response_model=ChatResponse)
