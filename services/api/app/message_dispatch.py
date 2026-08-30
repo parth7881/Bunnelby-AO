@@ -9,6 +9,12 @@ from .approval_service import (
     create_calendar_event_approval,
     create_gmail_compose_approval,
 )
+from .calendar_agenda_service import (
+    agenda_range,
+    format_agenda_response,
+    is_agenda_request,
+    list_events,
+)
 from .calendar_service import (
     CalendarAuthorizationError,
     CalendarConfigurationError,
@@ -41,12 +47,13 @@ _COMPOSE_ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 _CALENDAR_CUE_RE = re.compile(
-    r"\b(?:calendar|event|meeting|appointment|schedule|book|availability|available|free|slot|slots|openings?)\b",
+    r"\b(?:calendar|event|meeting|appointment|schedule|agenda|timetable|time\s+table|book|"
+    r"availability|available|free|slot|slots|openings?)\b",
     re.IGNORECASE,
 )
 _CALENDAR_TIME_RE = re.compile(
-    r"\b(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
-    r"morning|afternoon|evening|tonight|\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{4}-\d{1,2}-\d{1,2})\b",
+    r"\b(?:today|aaj|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"morning|afternoon|evening|tonight|\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{4}-\d{1,2}-\d{1,2})\b|आज",
     re.IGNORECASE,
 )
 
@@ -65,7 +72,11 @@ def _calendar_requested(user_message: str) -> bool:
     if not text or not _CALENDAR_CUE_RE.search(text):
         return False
     return bool(
-        re.search(r"\b(?:calendar|event|meeting|appointment|schedule|book|slot|slots|openings?)\b", text, re.IGNORECASE)
+        re.search(
+            r"\b(?:calendar|event|meeting|appointment|schedule|agenda|timetable|time\s+table|book|slot|slots|openings?)\b",
+            text,
+            re.IGNORECASE,
+        )
         or (
             re.search(r"\b(?:am\s+i|are\s+we|find|check|show|free|available)\b", text, re.IGNORECASE)
             and _CALENDAR_TIME_RE.search(text)
@@ -91,13 +102,84 @@ def _result(
     )
 
 
+def _calendar_agenda_result(user_message: str) -> OrchestratorResult:
+    language = detect_spoken_language(user_message)
+    try:
+        start, end, _zone = agenda_range(user_message)
+        events = list_events((start, end))
+        reply = format_agenda_response(start, events)
+        if events:
+            spoken = (
+                f"आज आपके कैलेंडर में {len(events)} इवेंट हैं। पूरी सूची स्क्रीन पर है।"
+                if language == "hi"
+                else f"You have {len(events)} calendar event{'s' if len(events) != 1 else ''} scheduled. The full agenda is on screen."
+            )
+        else:
+            spoken = (
+                "आज आपके गूगल कैलेंडर में कोई इवेंट नहीं है।"
+                if language == "hi"
+                else "You don't have any Google Calendar events scheduled for that day."
+            )
+        return _result(
+            reply,
+            spoken_reply=spoken,
+            action_type="calendar_read",
+            route="calendar",
+            reason="verified Google Calendar agenda lookup",
+        )
+    except CalendarParseError as exc:
+        return _result(
+            str(exc),
+            spoken_reply=(
+                "शेड्यूल देखने के लिए तारीख थोड़ी और स्पष्ट बताइए।"
+                if language == "hi"
+                else "I need a clearer date before I can read your schedule."
+            ),
+            action_type="error",
+            route="calendar",
+            reason="calendar agenda date requires clarification",
+        )
+    except CalendarConfigurationError as exc:
+        return _result(
+            f"Bunnelby Calendar setup is incomplete: {exc}",
+            spoken_reply="Calendar setup is incomplete. Nothing was changed.",
+            action_type="error",
+            route="calendar",
+            reason="calendar configuration error",
+        )
+    except CalendarAuthorizationError as exc:
+        return _result(
+            f"Bunnelby could not authorize Google Calendar: {exc}",
+            spoken_reply="Google Calendar authorization is required. Nothing was changed.",
+            action_type="error",
+            route="calendar",
+            reason="calendar authorization error",
+        )
+    except CalendarRateLimitError:
+        return _result(
+            "Google Calendar API rate limit reached. Please retry in a moment.",
+            spoken_reply="Google Calendar is temporarily rate-limited. Nothing was changed.",
+            action_type="error",
+            route="calendar",
+            reason="calendar rate limit",
+        )
+    except CalendarServiceError as exc:
+        logger.warning("Calendar agenda request failed: %s", exc)
+        return _result(
+            f"Bunnelby could not read your Google Calendar schedule: {exc}",
+            spoken_reply="I couldn't read your Google Calendar schedule right now.",
+            action_type="error",
+            route="calendar",
+            reason="calendar agenda service error",
+        )
+
+
 def _calendar_result(user_message: str) -> OrchestratorResult:
     language = detect_spoken_language(user_message)
     try:
         request = parse_calendar_request(user_message)
 
         if request.action == "create_event":
-            # Fail closed on conflicts before asking the human to approve a knowingly busy time.
             busy = check_free_busy((request.start, request.end))
             if busy:
                 reply = (
@@ -209,8 +291,6 @@ def _gmail_compose_result(user_message: str) -> OrchestratorResult:
         draft = draft_new_email_from_request(user_message)
         approval = create_gmail_compose_approval(draft, spoken_language=language)
         public = approval_public_dict(approval)
-        # Compatibility: the current frontend also accepts gmail_compose directly now,
-        # but preserving the actual durable type is important for generalized approvals.
         return _result(
             f"I drafted a new email to {draft['to']}. Review the exact recipient, subject, and message below. Nothing will be sent until you explicitly approve it.",
             spoken_reply=(
@@ -240,6 +320,8 @@ def handle_message_result(user_message: str) -> OrchestratorResult:
     """Active dispatch layer for production tool handlers before generic intent fallback."""
     if _standalone_email_requested(user_message):
         return _gmail_compose_result(user_message)
+    if is_agenda_request(user_message):
+        return _calendar_agenda_result(user_message)
     if _calendar_requested(user_message):
         return _calendar_result(user_message)
     return _base_handle_message_result(user_message)
