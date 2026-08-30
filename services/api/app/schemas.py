@@ -17,6 +17,12 @@ class ApprovalResponse(BaseModel):
     execution_state: ExecutionState
     recipient: str | None = None
     subject: str | None = None
+    title: str | None = None
+    start: str | None = None
+    end: str | None = None
+    timezone: str | None = None
+    attendees: list[str] | None = None
+    calendar_id: str | None = None
     created_at: datetime
     resolved_at: datetime | None = None
     executed_at: datetime | None = None
@@ -27,8 +33,10 @@ class ApprovalDecisionResponse(BaseModel):
     approval: ApprovalResponse
     outcome: Literal[
         "sent",
+        "created",
         "rejected",
         "already_sent",
+        "already_created",
         "already_processing",
         "failed",
         "unknown",
@@ -45,7 +53,6 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     spoken_reply: str | None = None
-    # Temporary Prompt 6 compatibility alias. New consumers use spoken_reply.
     spoken_ack: str | None = None
     spoken_language: Literal["en", "hi"] | None = None
     action_type: str | None = None
