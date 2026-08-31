@@ -21,11 +21,70 @@ class WakeWordAssetTests(unittest.TestCase):
                 tar.addfile(info, io.BytesIO(payload))
         return buffer.getvalue()
 
+    def _parse_verified_manifest(self, text: str) -> str:
+        with patch.object(
+            wake_word_assets,
+            "_sha256",
+            return_value=wake_word_assets.CHECKSUM_MANIFEST_SHA256,
+        ):
+            return wake_word_assets._parse_archive_sha256(text.encode("utf-8"))
+
     def test_unverified_checksum_manifest_fails_closed(self) -> None:
         with self.assertRaises(wake_word_assets.WakeWordAssetError):
             wake_word_assets._parse_archive_sha256(
                 b"0" * 64 + b"  " + wake_word_assets.MODEL_ARCHIVE_NAME.encode() + b"\n"
             )
+
+    def test_verified_sha256sum_manifest_variant_is_accepted(self) -> None:
+        digest = "a" * 64
+        result = self._parse_verified_manifest(
+            f"{digest}  {wake_word_assets.MODEL_ARCHIVE_NAME}\n"
+        )
+        self.assertEqual(result, digest)
+
+    def test_verified_path_prefixed_manifest_variant_is_accepted(self) -> None:
+        digest = "b" * 64
+        result = self._parse_verified_manifest(
+            f"{digest}  ./release/{wake_word_assets.MODEL_ARCHIVE_NAME}\n"
+        )
+        self.assertEqual(result, digest)
+
+    def test_verified_sha256_label_manifest_variant_is_accepted(self) -> None:
+        digest = "c" * 64
+        result = self._parse_verified_manifest(
+            f"{wake_word_assets.MODEL_ARCHIVE_NAME}: sha256:{digest}\n"
+        )
+        self.assertEqual(result, digest)
+
+    def test_duplicate_target_checksum_entries_are_rejected(self) -> None:
+        digest = "d" * 64
+        manifest = (
+            f"{digest}  {wake_word_assets.MODEL_ARCHIVE_NAME}\n"
+            f"{digest}  ./release/{wake_word_assets.MODEL_ARCHIVE_NAME}\n"
+        )
+        with (
+            patch.object(
+                wake_word_assets,
+                "_sha256",
+                return_value=wake_word_assets.CHECKSUM_MANIFEST_SHA256,
+            ),
+            self.assertRaises(wake_word_assets.WakeWordAssetError),
+        ):
+            wake_word_assets._parse_archive_sha256(manifest.encode("utf-8"))
+
+    def test_ambiguous_digest_line_is_rejected(self) -> None:
+        manifest = (
+            f"{'e' * 64} {'f' * 64} {wake_word_assets.MODEL_ARCHIVE_NAME}\n"
+        )
+        with (
+            patch.object(
+                wake_word_assets,
+                "_sha256",
+                return_value=wake_word_assets.CHECKSUM_MANIFEST_SHA256,
+            ),
+            self.assertRaises(wake_word_assets.WakeWordAssetError),
+        ):
+            wake_word_assets._parse_archive_sha256(manifest.encode("utf-8"))
 
     def test_archive_path_traversal_is_rejected(self) -> None:
         archive = self._tar_bytes({"../tokens.txt": b"fixture"})
