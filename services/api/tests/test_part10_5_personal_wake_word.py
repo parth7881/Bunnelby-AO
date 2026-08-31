@@ -42,9 +42,21 @@ class PersonalWakeWordTests(unittest.TestCase):
         self.assertLess(pww.dtw_distance(features, features), 1e-5)
 
     def test_profile_round_trip_uses_no_pickle(self) -> None:
-        positives = [pww.extract_acoustic_features(self._tone(220 + i * 2)) for i in range(6)]
-        negatives = [pww.extract_acoustic_features(self._tone(500 + i * 30)) for i in range(8)]
-        profile = pww.calibrate_profile(positives, negatives)
+        # This test is intentionally about safe NPZ serialization only. Calibration
+        # separability is covered by the dedicated positive/negative/overlap tests below,
+        # so do not couple round-trip determinism to synthetic acoustic calibration.
+        positives = tuple(
+            pww.extract_acoustic_features(self._tone(220 + i * 2)) for i in range(6)
+        )
+        negatives = tuple(
+            pww.extract_acoustic_features(self._tone(500 + i * 30)) for i in range(8)
+        )
+        profile = pww.WakeWordProfile(
+            positive_templates=positives,
+            negative_templates=negatives,
+            positive_threshold=0.125,
+            separation_margin=0.01,
+        )
 
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "profile.npz"
@@ -53,8 +65,10 @@ class PersonalWakeWordTests(unittest.TestCase):
 
         self.assertEqual(len(loaded.positive_templates), 6)
         self.assertEqual(len(loaded.negative_templates), 8)
-        self.assertGreater(loaded.positive_threshold, 0)
-        self.assertGreater(loaded.separation_margin, 0)
+        self.assertAlmostEqual(loaded.positive_threshold, 0.125, places=6)
+        self.assertAlmostEqual(loaded.separation_margin, 0.01, places=6)
+        np.testing.assert_allclose(loaded.positive_templates[0], positives[0])
+        np.testing.assert_allclose(loaded.negative_templates[-1], negatives[-1])
 
     def test_corrupt_profile_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
