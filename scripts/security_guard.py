@@ -11,13 +11,25 @@ SCAN_ROOTS = (
     PROJECT_ROOT / "services" / "api" / "app",
     PROJECT_ROOT / "services" / "api" / "scripts",
     PROJECT_ROOT / "apps" / "desktop" / "src",
+    PROJECT_ROOT / ".github" / "workflows",
 )
 EXTRA_FILES = (
     PROJECT_ROOT / "apps" / "desktop" / "electron.cjs",
     PROJECT_ROOT / "apps" / "desktop" / "preload.cjs",
     PROJECT_ROOT / "apps" / "desktop" / "index.html",
 )
-SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".cjs", ".mjs", ".ts", ".tsx", ".html"}
+SOURCE_SUFFIXES = {
+    ".py",
+    ".js",
+    ".jsx",
+    ".cjs",
+    ".mjs",
+    ".ts",
+    ".tsx",
+    ".html",
+    ".yml",
+    ".yaml",
+}
 
 
 @dataclass(frozen=True)
@@ -43,6 +55,16 @@ RULES = (
     ),
     Rule("BUN010", "Wildcard FastAPI CORS origin is forbidden", re.compile(r"allow_origins\s*=\s*\[\s*['\"]\*['\"]\s*\]")),
     Rule("BUN011", "Wildcard CORS response header is forbidden", re.compile(r"access-control-allow-origin[^\n]{0,30}\*", re.I)),
+    Rule("BUN012", "TLS certificate verification must not be disabled", re.compile(r"\bverify\s*=\s*False\b")),
+    Rule("BUN013", "Unsafe Python pickle deserialization is forbidden", re.compile(r"\bpickle\.(?:loads?|Unpickler)\s*\(")),
+    Rule("BUN014", "Unsafe yaml.load requires SafeLoader/safe_load", re.compile(r"\byaml\.load\s*\(")),
+    Rule("BUN015", "Temporary files must not use mktemp", re.compile(r"\btempfile\.mktemp\s*\(")),
+    Rule("BUN016", "Dynamic Function constructor is forbidden", re.compile(r"\bnew\s+Function\s*\(")),
+    Rule(
+        "BUN017",
+        "GitHub Actions must be pinned to a full immutable commit SHA",
+        re.compile(r"^\s*-?\s*uses:\s*[^\s@]+@(?!(?:[0-9a-fA-F]{40})(?:\s|#|$))[^\s#]+", re.M),
+    ),
 )
 
 # High-signal credential formats. Environment-variable names and placeholders are not matches.
@@ -51,6 +73,7 @@ SECRET_PATTERNS = (
     Rule("SEC002", "Possible Groq API key committed to source", re.compile(r"\bgsk_[0-9A-Za-z]{20,}\b")),
     Rule("SEC003", "Possible OpenAI-style API key committed to source", re.compile(r"\bsk-[0-9A-Za-z_-]{20,}\b")),
     Rule("SEC004", "Private key material committed to source", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
+    Rule("SEC005", "Possible GitHub personal/access token committed to source", re.compile(r"\bgh[pousr]_[0-9A-Za-z]{30,}\b")),
 )
 
 
