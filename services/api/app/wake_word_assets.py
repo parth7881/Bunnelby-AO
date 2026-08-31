@@ -208,7 +208,10 @@ def _build_bunnelby_keyword(tokens_path: Path, bpe_path: Path) -> bytes:
     if any("\n" in piece or "\r" in piece or len(piece) > 64 for piece in pieces):
         raise WakeWordAssetError("Bunnelby wake phrase produced unsafe keyword tokens.")
 
-    line = " ".join(pieces + [f"@{WAKE_LABEL}"]) + "\n"
+    # For English BPE KWS, sherpa-onnx expects only the encoded token sequence.
+    # Original-word metadata prefixed with '@' is required by phonetic/pinyin modes,
+    # not by the BPE model used for Bunnelby.
+    line = " ".join(pieces) + "\n"
     payload = line.encode("utf-8")
     if len(payload) > 4096:
         raise WakeWordAssetError("Bunnelby keyword definition is unexpectedly large.")
