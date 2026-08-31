@@ -57,6 +57,29 @@ def wake_word_settings() -> WakeWordSettings:
     )
 
 
+def calibrated_wake_word_settings(*, score: float, threshold: float) -> WakeWordSettings:
+    """Return a bounded calibration profile without mutating process environment."""
+    base = wake_word_settings()
+    try:
+        normalized_score = float(score)
+        normalized_threshold = float(threshold)
+    except (TypeError, ValueError) as exc:
+        raise WakeWordError("Wake-word calibration values must be numeric.") from exc
+    if not 0.1 <= normalized_score <= 10.0:
+        raise WakeWordError("Wake-word calibration score must be between 0.1 and 10.0.")
+    if not 0.01 <= normalized_threshold <= 0.99:
+        raise WakeWordError("Wake-word calibration threshold must be between 0.01 and 0.99.")
+    return WakeWordSettings(
+        sample_rate=base.sample_rate,
+        num_threads=base.num_threads,
+        max_active_paths=base.max_active_paths,
+        num_trailing_blanks=base.num_trailing_blanks,
+        keywords_score=normalized_score,
+        keywords_threshold=normalized_threshold,
+        provider=base.provider,
+    )
+
+
 def wake_word_model_dir() -> Path:
     configured = os.getenv("WAKE_WORD_MODEL_DIR", "").strip()
     if configured:
@@ -100,12 +123,13 @@ def validate_wake_word_model(model_dir: Path | None = None) -> dict[str, Path]:
     return paths
 
 
-def create_keyword_spotter() -> Any:
+def create_keyword_spotter(*, settings: WakeWordSettings | None = None) -> Any:
     """Create Bunnelby's local streaming keyword spotter.
 
     The runtime is intentionally CPU-only and local. The model is never downloaded from this
     function; installation/bootstrap is an explicit setup operation so an always-on microphone
-    process cannot unexpectedly access the network.
+    process cannot unexpectedly access the network. ``settings`` exists for controlled local
+    calibration; production callers normally omit it.
     """
     paths = validate_wake_word_model()
 
@@ -116,20 +140,22 @@ def create_keyword_spotter() -> Any:
             "sherpa-onnx is not available in the Bunnelby backend environment."
         ) from exc
 
-    settings = wake_word_settings()
+    active = settings or wake_word_settings()
+    if active.sample_rate != 16000 or active.provider != "cpu":
+        raise WakeWordError("Wake-word runtime calibration must remain 16 kHz and CPU-only.")
     try:
         return sherpa_onnx.KeywordSpotter(
             tokens=str(paths["tokens"]),
             encoder=str(paths["encoder"]),
             decoder=str(paths["decoder"]),
             joiner=str(paths["joiner"]),
-            num_threads=settings.num_threads,
-            max_active_paths=settings.max_active_paths,
-            num_trailing_blanks=settings.num_trailing_blanks,
+            num_threads=active.num_threads,
+            max_active_paths=active.max_active_paths,
+            num_trailing_blanks=active.num_trailing_blanks,
             keywords_file=str(paths["keywords"]),
-            keywords_score=settings.keywords_score,
-            keywords_threshold=settings.keywords_threshold,
-            provider=settings.provider,
+            keywords_score=active.keywords_score,
+            keywords_threshold=active.keywords_threshold,
+            provider=active.provider,
         )
     except Exception as exc:
         raise WakeWordUnavailableError("Wake-word model could not be initialized.") from exc
@@ -142,12 +168,8 @@ def detect_keyword_from_samples(
     *,
     sample_rate: int = 16000,
 ) -> str:
-    """Feed one PCM float chunk and return a detected keyword, or an empty string.
-
-    Callers own the microphone and stream lifecycle. The stream is reset immediately after a
-    detection so one spoken wake phrase cannot repeatedly trigger the same activation.
-    """
-    if sample_rate != wake_word_settings().sample_rate:
+    """Feed one PCM float chunk and return a detected keyword, or an empty string."""
+    if sample_rate != 16000:
         raise WakeWordError("Wake-word audio must be 16 kHz mono PCM float samples.")
 
     stream.accept_waveform(sample_rate, samples)
