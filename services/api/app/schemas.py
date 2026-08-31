@@ -62,3 +62,10 @@ class ChatResponse(BaseModel):
 class TTSRequest(BaseModel):
     text: str = Field(min_length=1, max_length=600)
     language: Literal["en", "hi"]
+
+
+class STTResponse(BaseModel):
+    text: str
+    language: str
+    language_probability: float
+    duration_seconds: float
