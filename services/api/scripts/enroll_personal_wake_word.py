@@ -39,6 +39,10 @@ NEGATIVE_PROMPTS = (
     "Close it",
 )
 
+MIN_SHORT_PHRASE_SECONDS = 0.30
+MAX_SHORT_PHRASE_SECONDS = 1.80
+MAX_ATTEMPTS_PER_SAMPLE = 5
+
 
 def _resolve_input_device(sd, requested: str | None):
     devices = sd.query_devices()
@@ -73,12 +77,16 @@ def _resolve_input_device(sd, requested: str | None):
     raise RuntimeError("No microphone input device found.")
 
 
+def _short_phrase_duration_is_suspicious(duration_seconds: float) -> bool:
+    return not MIN_SHORT_PHRASE_SECONDS <= duration_seconds <= MAX_SHORT_PHRASE_SECONDS
+
+
 def _capture_feature(
     stream,
     *,
     prompt: str,
     timeout_seconds: float,
-) -> np.ndarray:
+) -> tuple[np.ndarray, float]:
     print(prompt)
     print("  Speak after the prompt, then stop speaking.")
     detector = create_voice_activity_detector()
@@ -96,7 +104,70 @@ def _capture_feature(
     features = extract_acoustic_features(segment, sample_rate=settings.sample_rate)
     print(f"  Captured: {duration:.2f}s → {features.shape[0]} feature frames")
     del segment
-    return features
+    return features, duration
+
+
+def _capture_confirmed_feature(
+    sd,
+    *,
+    device_index: int,
+    prompt: str,
+    expected_text: str,
+    timeout_seconds: float,
+) -> np.ndarray:
+    """Capture one short phrase with quality gating and explicit human confirmation.
+
+    Each attempt owns a fresh microphone stream. This prevents audio spoken while the user
+    is deciding whether to accept/re-record a sample from being queued into the next sample.
+    Raw PCM never leaves memory and is discarded after feature extraction.
+    """
+    settings = vad_settings()
+    for attempt in range(1, MAX_ATTEMPTS_PER_SAMPLE + 1):
+        if attempt > 1:
+            print(f"  Re-record attempt {attempt}/{MAX_ATTEMPTS_PER_SAMPLE}")
+
+        with sd.InputStream(
+            device=device_index,
+            channels=1,
+            dtype="float32",
+            samplerate=settings.sample_rate,
+            blocksize=settings.window_size,
+        ) as mic:
+            features, duration = _capture_feature(
+                mic,
+                prompt=prompt,
+                timeout_seconds=timeout_seconds,
+            )
+
+        if _short_phrase_duration_is_suspicious(duration):
+            print(
+                f"  AUTO-REJECT: {duration:.2f}s is unusual for this short phrase. "
+                "Wait for the prompt, say only the requested words once, then stop."
+            )
+            time.sleep(0.35)
+            continue
+
+        print(f'  Expected phrase: "{expected_text}"')
+        while True:
+            choice = input(
+                "  Press ENTER if you said it correctly, R to re-record, or Q to cancel: "
+            ).strip().casefold()
+            if choice in ("", "a", "accept"):
+                print("  Accepted.\n")
+                return features
+            if choice in ("r", "redo", "retry"):
+                print("  Discarded — recording again.\n")
+                break
+            if choice in ("q", "quit", "cancel"):
+                raise KeyboardInterrupt
+            print("  Invalid choice. Use ENTER, R, or Q.")
+
+        time.sleep(0.35)
+
+    raise RuntimeError(
+        "Too many failed/rejected recordings for one enrollment sample. "
+        "Check microphone conditions and retry enrollment later."
+    )
 
 
 def main() -> int:
@@ -120,7 +191,6 @@ def main() -> int:
     try:
         import sounddevice as sd
 
-        settings = vad_settings()
         device_index = _resolve_input_device(sd, args.device.strip() or None)
         device = sd.query_devices(device_index)
         print(f"Microphone: {device['name']}")
@@ -131,42 +201,41 @@ def main() -> int:
             "Use your normal everyday voice and laptop distance. Vary speed and tone slightly "
             "between positive samples."
         )
+        print(
+            "After every recording, confirm it. If you said the wrong word, press R and only "
+            "that sample will be recorded again."
+        )
         print()
 
         positives: list[np.ndarray] = []
         negatives: list[np.ndarray] = []
-        with sd.InputStream(
-            device=device_index,
-            channels=1,
-            dtype="float32",
-            samplerate=settings.sample_rate,
-            blocksize=settings.window_size,
-        ) as mic:
-            for index in range(positive_count):
-                positives.append(
-                    _capture_feature(
-                        mic,
-                        prompt=f"Positive {index + 1}/{positive_count}: say ONLY  Bunnelby",
-                        timeout_seconds=timeout_seconds,
-                    )
-                )
-                time.sleep(0.25)
 
-            print()
-            print("Now record SHORT NON-wake phrases for false-positive calibration.")
-            print("These include intentionally similar words such as Bunny/Bundle/Bumblebee.")
-            print()
-            for index in range(negative_count):
-                negatives.append(
-                    _capture_feature(
-                        mic,
-                        prompt=(
-                            f'Negative {index + 1}/{negative_count}: say ONLY  "{NEGATIVE_PROMPTS[index]}"'
-                        ),
-                        timeout_seconds=timeout_seconds,
-                    )
+        for index in range(positive_count):
+            positives.append(
+                _capture_confirmed_feature(
+                    sd,
+                    device_index=device_index,
+                    prompt=f"Positive {index + 1}/{positive_count}: say ONLY  Bunnelby",
+                    expected_text="Bunnelby",
+                    timeout_seconds=timeout_seconds,
                 )
-                time.sleep(0.25)
+            )
+
+        print()
+        print("Now record SHORT NON-wake phrases for false-positive calibration.")
+        print("These include intentionally similar words such as Bunny/Bundle/Bumblebee.")
+        print()
+        for index in range(negative_count):
+            expected = NEGATIVE_PROMPTS[index]
+            negatives.append(
+                _capture_confirmed_feature(
+                    sd,
+                    device_index=device_index,
+                    prompt=f'Negative {index + 1}/{negative_count}: say ONLY  "{expected}"',
+                    expected_text=expected,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
 
         profile = calibrate_profile(positives, negatives)
         target = save_profile(profile)
