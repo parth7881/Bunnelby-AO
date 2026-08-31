@@ -101,38 +101,66 @@ class WakeWordAssetTests(unittest.TestCase):
         with self.assertRaises(wake_word_assets.WakeWordAssetError):
             wake_word_assets._extract_required_files(buffer.getvalue())
 
-    def test_bunnelby_keyword_generation_uses_documented_bpe_format(self) -> None:
-        calls: list[dict[str, object]] = []
+    def _keyword_fixture(self, root: Path, token_text: str) -> tuple[Path, Path]:
+        tokens = root / "tokens.txt"
+        bpe = root / "bpe.model"
+        tokens.write_text(token_text, encoding="utf-8")
+        bpe.write_bytes(b"fixture")
+        return tokens, bpe
 
-        def fake_text2token(texts, **kwargs):
-            calls.append({"texts": texts, **kwargs})
-            return [["▁BUN", "NEL", "BY"]]
+    def test_bunnelby_keyword_generation_uses_sentencepiece_only(self) -> None:
+        class FakeProcessor:
+            def Load(self, _path: str) -> bool:
+                return True
 
-        fake_module = SimpleNamespace(text2token=fake_text2token)
+            def EncodeAsPieces(self, text: str):
+                self.text = text
+                return ["▁BUN", "NEL", "BY"]
+
+        fake_sentencepiece = SimpleNamespace(SentencePieceProcessor=FakeProcessor)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            tokens = root / "tokens.txt"
-            bpe = root / "bpe.model"
-            tokens.write_text("fixture", encoding="utf-8")
-            bpe.write_bytes(b"fixture")
-            with patch.dict("sys.modules", {"sherpa_onnx": fake_module}):
+            tokens, bpe = self._keyword_fixture(
+                root,
+                "▁BUN 1\nNEL 2\nBY 3\n<blk> 0\n",
+            )
+            with patch.dict("sys.modules", {"sentencepiece": fake_sentencepiece}):
                 payload = wake_word_assets._build_bunnelby_keyword(tokens, bpe)
 
         self.assertEqual(payload.decode("utf-8"), "▁BUN NEL BY\n")
-        self.assertEqual(calls[0]["texts"], ["BUNNELBY"])
-        self.assertEqual(calls[0]["tokens_type"], "bpe")
-        self.assertEqual(calls[0]["lexicon"], "")
 
-    def test_empty_keyword_tokenization_fails_closed(self) -> None:
-        fake_module = SimpleNamespace(text2token=lambda *_args, **_kwargs: [[]])
+    def test_unknown_bpe_piece_fails_closed(self) -> None:
+        class FakeProcessor:
+            def Load(self, _path: str) -> bool:
+                return True
+
+            def EncodeAsPieces(self, _text: str):
+                return ["▁BUN", "UNKNOWN"]
+
+        fake_sentencepiece = SimpleNamespace(SentencePieceProcessor=FakeProcessor)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            tokens = root / "tokens.txt"
-            bpe = root / "bpe.model"
-            tokens.write_text("fixture", encoding="utf-8")
-            bpe.write_bytes(b"fixture")
+            tokens, bpe = self._keyword_fixture(root, "▁BUN 1\n<blk> 0\n")
             with (
-                patch.dict("sys.modules", {"sherpa_onnx": fake_module}),
+                patch.dict("sys.modules", {"sentencepiece": fake_sentencepiece}),
+                self.assertRaises(wake_word_assets.WakeWordAssetError),
+            ):
+                wake_word_assets._build_bunnelby_keyword(tokens, bpe)
+
+    def test_malformed_token_vocabulary_fails_closed(self) -> None:
+        class FakeProcessor:
+            def Load(self, _path: str) -> bool:
+                return True
+
+            def EncodeAsPieces(self, _text: str):
+                return ["▁BUN"]
+
+        fake_sentencepiece = SimpleNamespace(SentencePieceProcessor=FakeProcessor)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            tokens, bpe = self._keyword_fixture(root, "malformed-line\n")
+            with (
+                patch.dict("sys.modules", {"sentencepiece": fake_sentencepiece}),
                 self.assertRaises(wake_word_assets.WakeWordAssetError),
             ):
                 wake_word_assets._build_bunnelby_keyword(tokens, bpe)
