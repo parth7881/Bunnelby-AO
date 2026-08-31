@@ -9,6 +9,13 @@ import urllib.request
 import wave
 from pathlib import Path
 
+# When this file is launched directly (python services/api/scripts/...), Python puts only
+# the script directory on sys.path. Add the repository root so `services.api...` imports
+# work consistently from the documented repo-root command.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import numpy as np
 
 from services.api.app.stt_service import transcribe_audio
