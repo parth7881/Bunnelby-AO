@@ -1,11 +1,13 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 ApprovalStatus = Literal["pending", "approved", "rejected"]
 ExecutionState = Literal["not_started", "executing", "completed", "failed", "unknown"]
+
+MAX_CHAT_MESSAGE_CHARS = 8000
 
 
 class ApprovalResponse(BaseModel):
@@ -47,7 +49,17 @@ class ApprovalDecisionResponse(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=MAX_CHAT_MESSAGE_CHARS)
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("message contains an invalid NUL character")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("message must contain non-whitespace text")
+        return normalized
 
 
 class ChatResponse(BaseModel):
@@ -62,6 +74,16 @@ class ChatResponse(BaseModel):
 class TTSRequest(BaseModel):
     text: str = Field(min_length=1, max_length=600)
     language: Literal["en", "hi"]
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("text contains an invalid NUL character")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("text must contain non-whitespace content")
+        return normalized
 
 
 class STTResponse(BaseModel):
