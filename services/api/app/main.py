@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -22,7 +22,15 @@ from .schemas import (
     ApprovalResponse,
     ChatRequest,
     ChatResponse,
+    STTResponse,
     TTSRequest,
+)
+from .stt_service import (
+    STTAudioError,
+    STTDisabledError,
+    STTTranscriptionError,
+    STTUnavailableError,
+    transcribe_audio,
 )
 from .tts_service import (
     PiperUnavailableError,
@@ -34,7 +42,7 @@ from .tts_service import (
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Bunnelby API", version="0.5.0")
+app = FastAPI(title="Bunnelby API", version="0.6.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -90,6 +98,41 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
         spoken_language=spoken.language,
         action_type=spoken.action_type,
         approval=_approval_response(result.approval),
+    )
+
+
+@app.post("/stt", response_model=STTResponse)
+def speech_to_text(
+    audio: bytes = Body(..., media_type="application/octet-stream"),
+    language: str = Query(default="auto"),
+    content_type: str | None = Header(default=None, alias="Content-Type"),
+) -> STTResponse:
+    """Transcribe one short utterance locally using faster-whisper.
+
+    The desktop client sends raw recorded audio bytes. Audio is not stored after transcription.
+    """
+    try:
+        result = transcribe_audio(
+            audio,
+            content_type=content_type,
+            language=language,
+        )
+    except STTAudioError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except STTDisabledError as exc:
+        raise HTTPException(status_code=503, detail="Local speech recognition is disabled.") from exc
+    except STTUnavailableError as exc:
+        logger.warning("Bunnelby local STT unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail="Local speech recognition is unavailable.") from exc
+    except STTTranscriptionError as exc:
+        logger.warning("Bunnelby local STT failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Local speech recognition failed.") from exc
+
+    return STTResponse(
+        text=result.text,
+        language=result.language,
+        language_probability=result.language_probability,
+        duration_seconds=result.duration_seconds,
     )
 
 
