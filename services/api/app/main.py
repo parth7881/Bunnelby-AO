@@ -3,6 +3,7 @@ import logging
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .acknowledgments import select_spoken_response
 from .approval_service import (
@@ -25,6 +26,12 @@ from .schemas import (
     STTResponse,
     TTSRequest,
 )
+from .security import (
+    ALLOWED_BROWSER_ORIGINS,
+    TRUSTED_HOSTS,
+    LocalAPISecurityMiddleware,
+    api_docs_enabled,
+)
 from .stt_service import (
     STTAudioError,
     STTDisabledError,
@@ -42,15 +49,27 @@ from .tts_service import (
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Bunnelby API", version="0.6.0")
+_docs_enabled = api_docs_enabled()
+app = FastAPI(
+    title="Bunnelby API",
+    version="0.6.1",
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
+)
 
+# The desktop renderer is the only browser origin allowed to call the local API. CORS is
+# intentionally not an authentication mechanism; LocalAPISecurityMiddleware also blocks
+# hostile browser origins/fetch metadata and bounds request bodies.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=sorted(ALLOWED_BROWSER_ORIGINS),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Accept", "Content-Type"],
 )
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=TRUSTED_HOSTS)
+app.add_middleware(LocalAPISecurityMiddleware)
 
 
 def get_db():
@@ -104,7 +123,7 @@ def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
 @app.post("/stt", response_model=STTResponse)
 def speech_to_text(
     audio: bytes = Body(..., media_type="application/octet-stream"),
-    language: str = Query(default="auto"),
+    language: str = Query(default="auto", min_length=2, max_length=4),
     content_type: str | None = Header(default=None, alias="Content-Type"),
 ) -> STTResponse:
     """Transcribe one short utterance locally using faster-whisper.
@@ -138,6 +157,8 @@ def speech_to_text(
 
 @app.get("/approvals/{approval_id}", response_model=ApprovalResponse)
 def read_approval(approval_id: int) -> ApprovalResponse:
+    if approval_id < 1:
+        raise HTTPException(status_code=422, detail="Invalid approval id.")
     try:
         return ApprovalResponse(**approval_public_dict(get_approval(approval_id)))
     except ApprovalNotFoundError as exc:
@@ -146,6 +167,8 @@ def read_approval(approval_id: int) -> ApprovalResponse:
 
 @app.post("/approvals/{approval_id}/approve", response_model=ApprovalDecisionResponse)
 def approve(approval_id: int) -> ApprovalDecisionResponse:
+    if approval_id < 1:
+        raise HTTPException(status_code=422, detail="Invalid approval id.")
     try:
         result = approve_and_execute(approval_id)
     except ApprovalNotFoundError as exc:
@@ -189,6 +212,8 @@ def approve(approval_id: int) -> ApprovalDecisionResponse:
 
 @app.post("/approvals/{approval_id}/reject", response_model=ApprovalDecisionResponse)
 def reject(approval_id: int) -> ApprovalDecisionResponse:
+    if approval_id < 1:
+        raise HTTPException(status_code=422, detail="Invalid approval id.")
     try:
         result = reject_approval(approval_id)
     except ApprovalNotFoundError as exc:
