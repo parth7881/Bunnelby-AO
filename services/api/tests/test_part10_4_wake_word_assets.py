@@ -42,7 +42,7 @@ class WakeWordAssetTests(unittest.TestCase):
         with self.assertRaises(wake_word_assets.WakeWordAssetError):
             wake_word_assets._extract_required_files(buffer.getvalue())
 
-    def test_bunnelby_keyword_generation_uses_bpe_and_original_label(self) -> None:
+    def test_bunnelby_keyword_generation_uses_documented_bpe_format(self) -> None:
         calls: list[dict[str, object]] = []
 
         def fake_text2token(texts, **kwargs):
@@ -59,7 +59,7 @@ class WakeWordAssetTests(unittest.TestCase):
             with patch.dict("sys.modules", {"sherpa_onnx": fake_module}):
                 payload = wake_word_assets._build_bunnelby_keyword(tokens, bpe)
 
-        self.assertEqual(payload.decode("utf-8"), "▁BUN NEL BY @BUNNELBY\n")
+        self.assertEqual(payload.decode("utf-8"), "▁BUN NEL BY\n")
         self.assertEqual(calls[0]["texts"], ["BUNNELBY"])
         self.assertEqual(calls[0]["tokens_type"], "bpe")
         self.assertEqual(calls[0]["lexicon"], "")
@@ -85,7 +85,7 @@ class WakeWordAssetTests(unittest.TestCase):
                 (root / name).write_bytes(b"x")
             self.assertFalse(wake_word_assets.wake_word_assets_present(root))
             (root / "bunnelby.keywords.txt").write_text(
-                "▁BUN NEL BY @BUNNELBY\n", encoding="utf-8"
+                "▁BUN NEL BY\n", encoding="utf-8"
             )
             self.assertTrue(wake_word_assets.wake_word_assets_present(root))
 
