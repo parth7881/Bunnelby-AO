@@ -1,0 +1,82 @@
+name: Security Gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-security:
+    name: Backend tests and security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: services/api/requirements.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --no-input -r services/api/requirements.txt
+          python -m pip install --disable-pip-version-check --no-input pip-audit==2.10.1 bandit==1.9.4
+
+      - name: Deterministic secure-coding guard
+        run: python scripts/security_guard.py
+
+      - name: Backend regression tests
+        run: python -m unittest discover -s services/api/tests -v
+
+      - name: Python dependency vulnerability audit
+        run: python -m pip_audit -r services/api/requirements.txt
+
+      - name: Python static security analysis
+        run: bandit -r services/api/app services/api/scripts -q -ll
+
+  desktop-security:
+    name: Desktop build and dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: NPM high-severity vulnerability audit
+        run: npm audit --audit-level=high
+
+      - name: Build renderer
+        run: npm run build
+
+      - name: Deterministic secure-coding guard
+        working-directory: ${{ github.workspace }}
+        run: python scripts/security_guard.py
