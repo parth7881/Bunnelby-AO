@@ -18,22 +18,25 @@ from services.api.app.personal_wake_word import (
     extract_acoustic_features,
     save_profile,
 )
+from services.api.app.utterance_capture import UtteranceCaptureError, capture_vad_utterance
 from services.api.app.vad_service import create_voice_activity_detector, vad_settings
 
 
+# Short, confusable phrases are intentional. A production wake detector must reject
+# acoustically similar non-wake speech, not only long unrelated commands.
 NEGATIVE_PROMPTS = (
-    "What is on my calendar today?",
-    "Open the browser.",
-    "Check my latest email.",
-    "What time is my next meeting?",
-    "Play some music.",
-    "Search my files.",
-    "Tell me the weather.",
-    "Open Visual Studio Code.",
-    "What did I work on yesterday?",
-    "Read my notifications.",
-    "I am free this evening.",
-    "Close this window.",
+    "Bunny",
+    "Bundle",
+    "Bumblebee",
+    "Finally",
+    "Probably",
+    "Calendar",
+    "Browser",
+    "Music",
+    "Email",
+    "Meeting",
+    "Open it",
+    "Close it",
 )
 
 
@@ -70,26 +73,7 @@ def _resolve_input_device(sd, requested: str | None):
     raise RuntimeError("No microphone input device found.")
 
 
-def _capture_segment(sd, stream, detector, settings, *, timeout_seconds: float) -> np.ndarray:
-    deadline = time.monotonic() + timeout_seconds
-    buffer = np.empty(0, dtype=np.float32)
-    while time.monotonic() < deadline:
-        samples, overflowed = stream.read(settings.window_size)
-        if overflowed:
-            print("Warning: microphone input overflowed once; continuing.")
-        buffer = np.concatenate((buffer, np.asarray(samples, dtype=np.float32).reshape(-1)))
-        while len(buffer) >= settings.window_size:
-            detector.accept_waveform(buffer[: settings.window_size])
-            buffer = buffer[settings.window_size :]
-        if not detector.empty():
-            segment = np.asarray(detector.front.samples, dtype=np.float32).copy()
-            detector.pop()
-            return segment
-    raise TimeoutError("No completed speech segment detected before timeout.")
-
-
 def _capture_feature(
-    sd,
     stream,
     *,
     prompt: str,
@@ -99,17 +83,18 @@ def _capture_feature(
     print("  Speak after the prompt, then stop speaking.")
     detector = create_voice_activity_detector()
     settings = vad_settings()
-    segment = _capture_segment(
-        sd,
+    segment = capture_vad_utterance(
         stream,
         detector,
-        settings,
+        sample_rate=settings.sample_rate,
+        window_size=settings.window_size,
         timeout_seconds=timeout_seconds,
+        continuation_seconds=0.55,
+        max_output_seconds=4.0,
     )
     duration = len(segment) / settings.sample_rate
     features = extract_acoustic_features(segment, sample_rate=settings.sample_rate)
     print(f"  Captured: {duration:.2f}s → {features.shape[0]} feature frames")
-    # Raw audio is not written to disk and is released after feature extraction.
     del segment
     return features
 
@@ -160,7 +145,6 @@ def main() -> int:
             for index in range(positive_count):
                 positives.append(
                     _capture_feature(
-                        sd,
                         mic,
                         prompt=f"Positive {index + 1}/{positive_count}: say ONLY  Bunnelby",
                         timeout_seconds=timeout_seconds,
@@ -169,15 +153,15 @@ def main() -> int:
                 time.sleep(0.25)
 
             print()
-            print("Now record normal NON-wake speech for false-positive calibration.")
+            print("Now record SHORT NON-wake phrases for false-positive calibration.")
+            print("These include intentionally similar words such as Bunny/Bundle/Bumblebee.")
             print()
             for index in range(negative_count):
                 negatives.append(
                     _capture_feature(
-                        sd,
                         mic,
                         prompt=(
-                            f'Negative {index + 1}/{negative_count}: say  "{NEGATIVE_PROMPTS[index]}"'
+                            f'Negative {index + 1}/{negative_count}: say ONLY  "{NEGATIVE_PROMPTS[index]}"'
                         ),
                         timeout_seconds=timeout_seconds,
                     )
@@ -195,7 +179,7 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nCancelled. No profile was saved.")
         return 130
-    except (PersonalWakeWordError, TimeoutError, RuntimeError) as exc:
+    except (PersonalWakeWordError, UtteranceCaptureError, TimeoutError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         print("Enrollment failed closed; no new profile is trusted.", file=sys.stderr)
         return 1
