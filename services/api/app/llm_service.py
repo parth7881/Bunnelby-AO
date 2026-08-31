@@ -6,7 +6,6 @@ import os
 import threading
 import time
 import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from typing import Final, Literal
 
@@ -15,6 +14,7 @@ from google import genai
 from google.genai import errors
 
 from .database import PROJECT_ROOT
+from .secure_http import SecureHTTPError, request_https
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,9 @@ DEFAULT_GROQ_MODEL: Final[str] = "llama-3.3-70b-versatile"
 DEFAULT_GEMINI_COOLDOWN_SECONDS: Final[int] = 900
 DEFAULT_REQUEST_TIMEOUT_SECONDS: Final[int] = 45
 GROQ_CHAT_COMPLETIONS_URL: Final[str] = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_ALLOWED_HOSTS: Final[frozenset[str]] = frozenset({"api.groq.com"})
+MAX_GROQ_RESPONSE_BYTES: Final[int] = 2 * 1024 * 1024
+MAX_GROQ_REQUEST_BYTES: Final[int] = 512 * 1024
 RECOVERABLE_GEMINI_CODES: Final[frozenset[int]] = frozenset({429, 500, 502, 503, 504})
 
 
@@ -143,8 +146,6 @@ def _gemini_generate(
     except LLMServiceError:
         raise
     except Exception as exc:
-        # Network/transport failures are safe to fail over. Use a short provider cooldown
-        # so repeated requests do not stall on the same failing primary provider.
         activate_gemini_cooldown(type(exc).__name__)
         raise LLMUnavailableError("Gemini request failed before a usable response arrived.") from exc
     finally:
@@ -168,13 +169,7 @@ def generate_gemini_text(
     user_content: str,
     temperature: float = 0.35,
 ) -> LLMResult:
-    """Legacy Gemini-first entry point with Groq failover.
-
-    Prompt 7 originally used this function as Gemini-only for Gmail drafting.
-    Bunnelby's free-tier reliability policy now allows the same Gemini→Groq
-    failover used by normal chat and Gmail summarization. Approval and send
-    safety remain completely independent from model-provider selection.
-    """
+    """Legacy Gemini-first entry point with Groq failover."""
     return generate_text(
         system_instruction=system_instruction,
         user_content=user_content,
@@ -193,29 +188,41 @@ def generate_groq_text(
         raise LLMConfigurationError("GROQ_API_KEY is not configured.")
 
     model = groq_model_name()
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": temperature,
-    }
-    request = urllib.request.Request(
-        GROQ_CHAT_COMPLETIONS_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "AO-Desktop/1.0",
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_content},
+            ],
+            "temperature": temperature,
         },
-        method="POST",
-    )
+        separators=(",", ":"),
+    ).encode("utf-8")
 
     try:
-        with urllib.request.urlopen(request, timeout=request_timeout_seconds()) as response:
-            body = response.read()
+        response = request_https(
+            GROQ_CHAT_COMPLETIONS_URL,
+            allowed_hosts=GROQ_ALLOWED_HOSTS,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "Bunnelby-Desktop/1.0",
+            },
+            body=payload,
+            timeout_seconds=request_timeout_seconds(),
+            max_response_bytes=MAX_GROQ_RESPONSE_BYTES,
+            max_request_bytes=MAX_GROQ_REQUEST_BYTES,
+            max_redirects=0,
+        )
+        body = response.body
+        if response.status < 200 or response.status >= 300:
+            detail = _groq_error_message(body)
+            suffix = f": {detail}" if detail else ""
+            raise LLMUnavailableError(f"Groq request failed (HTTP {response.status}){suffix}")
+
         data = json.loads(body.decode("utf-8"))
         choices = data.get("choices") or []
         if not choices:
@@ -224,12 +231,8 @@ def generate_groq_text(
         if not text:
             raise LLMUnavailableError("Groq returned an empty response.")
         return LLMResult(text=text, provider="groq", model=model)
-    except urllib.error.HTTPError as exc:
-        detail = _groq_error_message(exc.read())
-        suffix = f": {detail}" if detail else ""
-        raise LLMUnavailableError(f"Groq request failed (HTTP {exc.code}){suffix}") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise LLMUnavailableError("Groq is temporarily unreachable.") from exc
+    except SecureHTTPError as exc:
+        raise LLMUnavailableError("Groq secure transport is temporarily unavailable.") from exc
     except json.JSONDecodeError as exc:
         raise LLMUnavailableError("Groq returned an invalid response payload.") from exc
     except LLMServiceError:
@@ -244,12 +247,7 @@ def generate_text(
     user_content: str,
     temperature: float = 0.35,
 ) -> LLMResult:
-    """Gemini-first generation with automatic Groq failover.
-
-    Gemini remains the primary provider. When Gemini is in cooldown after a quota,
-    server, timeout, or transport failure, requests skip directly to Groq until the
-    cooldown expires. Once it expires, AO probes Gemini again automatically.
-    """
+    """Gemini-first generation with automatic Groq failover."""
 
     failures: list[str] = []
     gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -262,7 +260,6 @@ def generate_text(
                 user_content,
                 temperature=temperature,
             )
-            # Successful primary response means any previous cooldown can be cleared.
             clear_gemini_cooldown()
             logger.info("AO LLM provider=gemini model=%s", result.model)
             return result
