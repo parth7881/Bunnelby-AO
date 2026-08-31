@@ -37,6 +37,7 @@ MAX_CHECKSUM_BYTES: Final[int] = 16 * 1024
 MAX_ARCHIVE_BYTES: Final[int] = 20 * 1024 * 1024
 MAX_UNPACKED_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_TAR_MEMBERS: Final[int] = 512
+MAX_TOKENS_FILE_BYTES: Final[int] = 64 * 1024
 WAKE_LABEL: Final[str] = "BUNNELBY"
 _SHA256_RE: Final[re.Pattern[str]] = re.compile(
     r"(?i)(?<![0-9a-f])([0-9a-f]{64})(?![0-9a-f])"
@@ -47,7 +48,7 @@ _ARCHIVE_REFERENCE_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 _REQUIRED_ARCHIVE_FILES: Final[dict[str, int]] = {
-    "tokens.txt": 64 * 1024,
+    "tokens.txt": MAX_TOKENS_FILE_BYTES,
     "bpe.model": 1024 * 1024,
     "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx": 8 * 1024 * 1024,
     "decoder-epoch-12-avg-2-chunk-16-left-64.onnx": 2 * 1024 * 1024,
@@ -80,14 +81,7 @@ def _fetch_official_asset(url: str, *, max_bytes: int) -> bytes:
 
 
 def _parse_archive_sha256(manifest: bytes) -> str:
-    """Return the model archive digest from the pinned official checksum manifest.
-
-    The upstream checksum action has changed textual formatting over time. We trust the
-    manifest only after verifying its pinned SHA-256, then accept narrow checksum-line
-    variants such as sha256sum/shasum output, path-prefixed filenames, and
-    ``filename: sha256:<digest>``. The target filename must appear exactly once and its
-    line must contain exactly one 64-hex SHA-256 value.
-    """
+    """Return the model archive digest from the pinned official checksum manifest."""
     if _sha256(manifest) != CHECKSUM_MANIFEST_SHA256:
         raise WakeWordAssetError(
             "Official wake-word checksum manifest failed integrity verification."
@@ -204,30 +198,76 @@ def _atomic_write(path: Path, data: bytes) -> None:
         temp.unlink(missing_ok=True)
 
 
+def _load_token_vocabulary(tokens_path: Path) -> set[str]:
+    try:
+        size = tokens_path.stat().st_size
+    except OSError as exc:
+        raise WakeWordAssetError("Wake-word token vocabulary is unavailable.") from exc
+    if size <= 0 or size > MAX_TOKENS_FILE_BYTES:
+        raise WakeWordAssetError("Wake-word token vocabulary has an invalid size.")
+
+    try:
+        text = tokens_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise WakeWordAssetError("Wake-word token vocabulary is invalid UTF-8.") from exc
+
+    vocabulary: set[str] = set()
+    ids: set[int] = set()
+    for raw_line in text.splitlines():
+        parts = raw_line.strip().split()
+        if len(parts) != 2:
+            raise WakeWordAssetError("Wake-word token vocabulary contains a malformed line.")
+        token, raw_id = parts
+        if not token or token in vocabulary:
+            raise WakeWordAssetError("Wake-word token vocabulary contains duplicate tokens.")
+        try:
+            token_id = int(raw_id)
+        except ValueError as exc:
+            raise WakeWordAssetError("Wake-word token vocabulary contains an invalid token ID.") from exc
+        if token_id < 0 or token_id in ids:
+            raise WakeWordAssetError("Wake-word token vocabulary contains duplicate/invalid IDs.")
+        vocabulary.add(token)
+        ids.add(token_id)
+
+    if not vocabulary:
+        raise WakeWordAssetError("Wake-word token vocabulary is empty.")
+    return vocabulary
+
+
 def _build_bunnelby_keyword(tokens_path: Path, bpe_path: Path) -> bytes:
+    """Encode BUNNELBY with SentencePiece without sherpa-onnx's pinyin dependencies.
+
+    sherpa-onnx's generic ``text2token`` utility imports pypinyin even for the English
+    BPE branch. Bunnelby only needs SentencePiece, so we use it directly and independently
+    validate every emitted BPE piece against the trusted model's tokens.txt vocabulary.
+    """
     try:
-        import sherpa_onnx
-    except Exception as exc:
+        import sentencepiece as spm
+    except ImportError as exc:
         raise WakeWordAssetError(
-            "sherpa-onnx is unavailable; cannot generate Bunnelby keyword tokens."
+            "sentencepiece is unavailable; install Bunnelby backend dependencies first."
         ) from exc
 
-    try:
-        encoded = sherpa_onnx.text2token(
-            [WAKE_LABEL],
-            tokens=str(tokens_path),
-            tokens_type="bpe",
-            bpe_model=str(bpe_path),
-            lexicon="",
-        )
-    except Exception as exc:
-        raise WakeWordAssetError(
-            "Bunnelby wake phrase could not be tokenized."
-        ) from exc
+    if not bpe_path.is_file() or bpe_path.stat().st_size <= 0:
+        raise WakeWordAssetError("Wake-word SentencePiece model is missing or empty.")
 
-    if not isinstance(encoded, list) or len(encoded) != 1 or not encoded[0]:
+    vocabulary = _load_token_vocabulary(tokens_path)
+
+    try:
+        processor = spm.SentencePieceProcessor()
+        loaded = processor.Load(str(bpe_path))
+        if loaded is False:
+            raise WakeWordAssetError("Wake-word SentencePiece model could not be loaded.")
+        encoded = processor.EncodeAsPieces(WAKE_LABEL)
+    except WakeWordAssetError:
+        raise
+    except Exception as exc:
+        raise WakeWordAssetError("Bunnelby wake phrase could not be tokenized.") from exc
+
+    if not isinstance(encoded, (list, tuple)) or not encoded:
         raise WakeWordAssetError("Bunnelby wake phrase produced no keyword tokens.")
-    pieces = [str(piece).strip() for piece in encoded[0] if str(piece).strip()]
+
+    pieces = [str(piece).strip() for piece in encoded if str(piece).strip()]
     if not pieces or len(pieces) > 32:
         raise WakeWordAssetError(
             "Bunnelby wake phrase produced an invalid token sequence."
@@ -236,10 +276,13 @@ def _build_bunnelby_keyword(tokens_path: Path, bpe_path: Path) -> bytes:
         raise WakeWordAssetError(
             "Bunnelby wake phrase produced unsafe keyword tokens."
         )
+    missing = [piece for piece in pieces if piece not in vocabulary]
+    if missing:
+        raise WakeWordAssetError(
+            "Bunnelby wake phrase contains BPE pieces absent from the KWS vocabulary: "
+            + ", ".join(missing)
+        )
 
-    # For English BPE KWS, sherpa-onnx expects only the encoded token sequence.
-    # Original-word metadata prefixed with '@' is required by phonetic/pinyin modes,
-    # not by the BPE model used for Bunnelby.
     line = " ".join(pieces) + "\n"
     payload = line.encode("utf-8")
     if len(payload) > 4096:
@@ -259,12 +302,7 @@ def wake_word_assets_present(target: Path | None = None) -> bool:
 
 
 def install_wake_word_assets(*, target: Path | None = None, force: bool = False) -> Path:
-    """Install the official KWS model and a locally generated Bunnelby keyword definition.
-
-    Network access occurs only in this explicit setup function. The always-on wake runtime never
-    downloads assets. The release checksum manifest is itself pinned by SHA-256, the model archive
-    is verified against that manifest, and only a narrow allow-list of regular files is extracted.
-    """
+    """Install the official KWS model and a locally generated Bunnelby keyword definition."""
     root = (target or wake_word_model_dir()).expanduser().resolve(strict=False)
     if wake_word_assets_present(root) and not force:
         return root
