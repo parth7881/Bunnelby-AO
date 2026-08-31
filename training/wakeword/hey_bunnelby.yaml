@@ -1,0 +1,79 @@
+# Bunnelby Part 10 — custom neural wake-word training config
+#
+# Canonical phrase: Hey Bunnelby
+# Runtime artifact: hey_bunnelby.onnx
+#
+# IMPORTANT: This first-pass config deliberately excludes ACAV100M precomputed
+# negative features because their downstream licensing may be incompatible with
+# future commercial use. We train first on generated positives, generated
+# adversarial negatives, augmentation/background audio, and then accept/reject
+# the resulting model only through the real-device deployment gate.
+
+model_name: "hey_bunnelby"
+
+target_phrase:
+  - "hey bunnelby"
+
+# Intentionally difficult near-misses. These are negative labels and must never
+# be added to target_phrase merely to increase apparent recall.
+custom_negative_phrases:
+  - "hey bunny"
+  - "hey bundle"
+  - "hey bumblebee"
+  - "hey buddy"
+  - "hey ben"
+  - "hey billy"
+  - "hey bunnel bee"
+  - "hey bunelby"
+  - "bunnelby"
+  - "bunny"
+  - "bundle"
+  - "bumblebee"
+  - "hey finally"
+  - "hey probably"
+  - "hey calendar"
+  - "hey browser"
+
+# Upstream recommends at least ~20k synthetic positives; one phrase gets the
+# full density here. Keep validation separate for early stopping.
+n_samples: 30000
+n_samples_val: 3000
+
+tts_batch_size: 50
+augmentation_batch_size: 16
+augmentation_rounds: 2
+
+# The current 2026 Colab compatibility toolkit prepares these paths.
+piper_sample_generator_path: "./piper-sample-generator"
+output_dir: "./hey_bunnelby_model"
+
+rir_paths:
+  - "./mit_rirs"
+
+background_paths:
+  - "./audioset_16k"
+  - "./fma"
+
+background_paths_duplication_rate:
+  - 1
+  - 1
+
+# Used for training-time false-positive estimation. The final deployment gate
+# still runs separately on real Windows-laptop room audio.
+false_positive_validation_data_path: "./validation_set_features.npy"
+
+# Commercially-clean first pass: do not use ACAV100M/openwakeword_features here.
+# Generated positive/adversarial-negative feature files are added automatically
+# by openWakeWord's trainer at runtime.
+feature_data_files: {}
+
+# Balanced 1024-example batch using only generated classes for the first pass.
+batch_n_per_class:
+  "adversarial_negative": 512
+  "positive": 512
+
+model_type: "dnn"
+layer_size: 32
+steps: 50000
+max_negative_weight: 1500
+target_false_positives_per_hour: 0.2
