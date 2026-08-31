@@ -15,6 +15,7 @@ import numpy as np
 from services.api.app.wake_word_service import (
     WakeWordError,
     WakeWordUnavailableError,
+    calibrated_wake_word_settings,
     create_keyword_spotter,
     detect_keyword_from_samples,
     wake_word_settings,
@@ -58,18 +59,36 @@ def _resolve_input_device(sd, requested: str | None):
     raise RuntimeError("No microphone input device found.")
 
 
-def listen_for_wake_word(*, device_hint: str | None, timeout_seconds: float) -> tuple[str, float]:
+def listen_for_wake_word(
+    *,
+    device_hint: str | None,
+    timeout_seconds: float,
+    score: float | None,
+    threshold: float | None,
+) -> tuple[str, float]:
     try:
         import sounddevice as sd
     except Exception as exc:
         raise RuntimeError("sounddevice is unavailable.") from exc
 
-    settings = wake_word_settings()
-    spotter = create_keyword_spotter()
+    base_settings = wake_word_settings()
+    if (score is None) != (threshold is None):
+        raise WakeWordError("Calibration requires both --score and --threshold together.")
+    settings = (
+        calibrated_wake_word_settings(score=score, threshold=threshold)
+        if score is not None and threshold is not None
+        else base_settings
+    )
+    spotter = create_keyword_spotter(settings=settings)
     stream = spotter.create_stream()
     device_index = _resolve_input_device(sd, device_hint)
     device = sd.query_devices(device_index)
     print(f"Microphone: {device['name']}")
+    print(
+        "Wake profile: "
+        f"score={settings.keywords_score:.2f} "
+        f"threshold={settings.keywords_threshold:.2f}"
+    )
     print('Listening for wake word — say "Bunnelby"...')
 
     started = time.monotonic()
@@ -100,7 +119,9 @@ def listen_for_wake_word(*, device_hint: str | None, timeout_seconds: float) -> 
     except Exception as exc:
         raise RuntimeError(f"Microphone/wake-word capture failed: {exc}") from exc
 
-    raise TimeoutError(f'Wake word "Bunnelby" was not detected within {timeout_seconds:.0f} seconds.')
+    raise TimeoutError(
+        f'Wake word "Bunnelby" was not detected within {timeout_seconds:.0f} seconds.'
+    )
 
 
 def main() -> int:
@@ -111,6 +132,18 @@ def main() -> int:
         help="Optional microphone input index or unique case-insensitive name fragment.",
     )
     parser.add_argument("--timeout-seconds", type=float, default=20.0)
+    parser.add_argument(
+        "--score",
+        type=float,
+        default=None,
+        help="Optional bounded KWS calibration score; use with --threshold.",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="Optional bounded KWS calibration threshold; use with --score.",
+    )
     args = parser.parse_args()
 
     timeout = max(5.0, min(float(args.timeout_seconds), 60.0))
@@ -118,6 +151,8 @@ def main() -> int:
         detected, latency = listen_for_wake_word(
             device_hint=args.device.strip() or None,
             timeout_seconds=timeout,
+            score=args.score,
+            threshold=args.threshold,
         )
         print(f"Wake detected: {detected}")
         print(f"Detection latency: {latency:.2f}s")
