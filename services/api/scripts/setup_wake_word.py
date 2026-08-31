@@ -12,6 +12,16 @@ from services.api.app.wake_word_assets import WakeWordAssetError, install_wake_w
 from services.api.app.wake_word_service import create_keyword_spotter, validate_wake_word_model
 
 
+def _require_sentencepiece() -> None:
+    try:
+        import sentencepiece  # noqa: F401
+    except Exception as exc:
+        raise RuntimeError(
+            "SentencePiece is required for one-time BPE wake-word setup. "
+            "Install the pinned backend requirements and rerun setup."
+        ) from exc
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Install and verify Bunnelby's local sherpa-onnx wake-word model."
@@ -24,6 +34,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        _require_sentencepiece()
         root = install_wake_word_assets(force=args.force)
         paths = validate_wake_word_model(root)
         # Initialization is part of setup validation; setup is not successful unless the
