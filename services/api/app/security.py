@@ -78,8 +78,10 @@ def _append_security_headers(message: Message) -> Message:
     if message.get("type") != "http.response.start":
         return message
 
+    # ASGI header names are bytes. Header names are ASCII case-insensitive, so bytes.lower()
+    # is the correct normalization and avoids decoding/re-encoding response metadata.
     existing = {
-        name.casefold()
+        name.lower()
         for name, _ in message.get("headers", [])
     }
     headers = list(message.get("headers", []))
