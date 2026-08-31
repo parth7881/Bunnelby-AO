@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import re
 import tarfile
 from pathlib import Path, PurePosixPath
 from typing import Final
@@ -37,6 +38,13 @@ MAX_ARCHIVE_BYTES: Final[int] = 20 * 1024 * 1024
 MAX_UNPACKED_BYTES: Final[int] = 64 * 1024 * 1024
 MAX_TAR_MEMBERS: Final[int] = 512
 WAKE_LABEL: Final[str] = "BUNNELBY"
+_SHA256_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?i)(?<![0-9a-f])([0-9a-f]{64})(?![0-9a-f])"
+)
+_ARCHIVE_REFERENCE_RE: Final[re.Pattern[str]] = re.compile(
+    rf"(?<![A-Za-z0-9._-])(?:[^\s]*[\\/])?{re.escape(MODEL_ARCHIVE_NAME)}"
+    r"(?![A-Za-z0-9._-])"
+)
 
 _REQUIRED_ARCHIVE_FILES: Final[dict[str, int]] = {
     "tokens.txt": 64 * 1024,
@@ -72,33 +80,46 @@ def _fetch_official_asset(url: str, *, max_bytes: int) -> bytes:
 
 
 def _parse_archive_sha256(manifest: bytes) -> str:
+    """Return the model archive digest from the pinned official checksum manifest.
+
+    The upstream checksum action has changed textual formatting over time. We trust the
+    manifest only after verifying its pinned SHA-256, then accept narrow checksum-line
+    variants such as sha256sum/shasum output, path-prefixed filenames, and
+    ``filename: sha256:<digest>``. The target filename must appear exactly once and its
+    line must contain exactly one 64-hex SHA-256 value.
+    """
     if _sha256(manifest) != CHECKSUM_MANIFEST_SHA256:
-        raise WakeWordAssetError("Official wake-word checksum manifest failed integrity verification.")
+        raise WakeWordAssetError(
+            "Official wake-word checksum manifest failed integrity verification."
+        )
 
     try:
         text = manifest.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise WakeWordAssetError("Wake-word checksum manifest is not valid UTF-8.") from exc
+        raise WakeWordAssetError(
+            "Wake-word checksum manifest is not valid UTF-8."
+        ) from exc
 
-    matches: list[str] = []
+    matching_digests: list[str] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        parts = line.split()
-        if len(parts) < 2:
+        if _ARCHIVE_REFERENCE_RE.search(line) is None:
             continue
-        digest = parts[0].casefold()
-        filename = parts[-1].lstrip("*")
-        if filename != MODEL_ARCHIVE_NAME:
-            continue
-        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-            raise WakeWordAssetError("Official wake-word archive checksum is malformed.")
-        matches.append(digest)
 
-    if len(matches) != 1:
-        raise WakeWordAssetError("Official checksum manifest does not uniquely identify the wake-word model.")
-    return matches[0]
+        digests = [value.casefold() for value in _SHA256_RE.findall(line)]
+        if len(digests) != 1:
+            raise WakeWordAssetError(
+                "Official wake-word archive checksum entry is malformed or ambiguous."
+            )
+        matching_digests.append(digests[0])
+
+    if len(matching_digests) != 1:
+        raise WakeWordAssetError(
+            "Official checksum manifest does not uniquely identify the wake-word model."
+        )
+    return matching_digests[0]
 
 
 def _validate_tar_member(member: tarfile.TarInfo) -> None:
@@ -132,7 +153,9 @@ def _extract_required_files(archive: bytes) -> dict[str, bytes]:
             if member.isreg():
                 total_unpacked += member.size
                 if total_unpacked > MAX_UNPACKED_BYTES:
-                    raise WakeWordAssetError("Wake-word archive expands beyond the allowed size.")
+                    raise WakeWordAssetError(
+                        "Wake-word archive expands beyond the allowed size."
+                    )
 
                 basename = PurePosixPath(member.name.replace("\\", "/")).name
                 limit = _REQUIRED_ARCHIVE_FILES.get(basename)
@@ -198,15 +221,21 @@ def _build_bunnelby_keyword(tokens_path: Path, bpe_path: Path) -> bytes:
             lexicon="",
         )
     except Exception as exc:
-        raise WakeWordAssetError("Bunnelby wake phrase could not be tokenized.") from exc
+        raise WakeWordAssetError(
+            "Bunnelby wake phrase could not be tokenized."
+        ) from exc
 
     if not isinstance(encoded, list) or len(encoded) != 1 or not encoded[0]:
         raise WakeWordAssetError("Bunnelby wake phrase produced no keyword tokens.")
     pieces = [str(piece).strip() for piece in encoded[0] if str(piece).strip()]
     if not pieces or len(pieces) > 32:
-        raise WakeWordAssetError("Bunnelby wake phrase produced an invalid token sequence.")
+        raise WakeWordAssetError(
+            "Bunnelby wake phrase produced an invalid token sequence."
+        )
     if any("\n" in piece or "\r" in piece or len(piece) > 64 for piece in pieces):
-        raise WakeWordAssetError("Bunnelby wake phrase produced unsafe keyword tokens.")
+        raise WakeWordAssetError(
+            "Bunnelby wake phrase produced unsafe keyword tokens."
+        )
 
     # For English BPE KWS, sherpa-onnx expects only the encoded token sequence.
     # Original-word metadata prefixed with '@' is required by phonetic/pinyin modes,
@@ -214,7 +243,9 @@ def _build_bunnelby_keyword(tokens_path: Path, bpe_path: Path) -> bytes:
     line = " ".join(pieces) + "\n"
     payload = line.encode("utf-8")
     if len(payload) > 4096:
-        raise WakeWordAssetError("Bunnelby keyword definition is unexpectedly large.")
+        raise WakeWordAssetError(
+            "Bunnelby keyword definition is unexpectedly large."
+        )
     return payload
 
 
@@ -222,7 +253,8 @@ def wake_word_assets_present(target: Path | None = None) -> bool:
     root = (target or wake_word_model_dir()).expanduser()
     required = set(_REQUIRED_ARCHIVE_FILES) | {"bunnelby.keywords.txt"}
     return root.is_dir() and all(
-        (root / name).is_file() and (root / name).stat().st_size > 0 for name in required
+        (root / name).is_file() and (root / name).stat().st_size > 0
+        for name in required
     )
 
 
@@ -242,14 +274,21 @@ def install_wake_word_assets(*, target: Path | None = None, force: bool = False)
 
     archive = _fetch_official_asset(MODEL_URL, max_bytes=MAX_ARCHIVE_BYTES)
     if _sha256(archive) != expected_archive_sha256:
-        raise WakeWordAssetError("Wake-word model archive failed SHA-256 verification.")
+        raise WakeWordAssetError(
+            "Wake-word model archive failed SHA-256 verification."
+        )
 
     files = _extract_required_files(archive)
     root.mkdir(parents=True, exist_ok=True)
     for name, payload in files.items():
         _atomic_write(root / name, payload)
 
-    keyword_payload = _build_bunnelby_keyword(root / "tokens.txt", root / "bpe.model")
+    keyword_payload = _build_bunnelby_keyword(
+        root / "tokens.txt", root / "bpe.model"
+    )
     _atomic_write(root / "bunnelby.keywords.txt", keyword_payload)
-    _atomic_write(root / "source.sha256", (expected_archive_sha256 + "\n").encode("ascii"))
+    _atomic_write(
+        root / "source.sha256",
+        (expected_archive_sha256 + "\n").encode("ascii"),
+    )
     return root
