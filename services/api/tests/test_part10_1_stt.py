@@ -14,14 +14,16 @@ class STTServiceTests(unittest.TestCase):
     def tearDown(self) -> None:
         stt_service._reset_model_cache_for_tests()
 
-    def test_defaults_lock_cpu_int8_small_model(self) -> None:
+    def test_defaults_lock_cpu_int8_small_model_and_beam5(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("STT_MODEL", None)
             os.environ.pop("STT_DEVICE", None)
             os.environ.pop("STT_COMPUTE_TYPE", None)
+            os.environ.pop("STT_BEAM_SIZE", None)
             self.assertEqual(stt_service.stt_model_name(), "small")
             self.assertEqual(stt_service.stt_device(), "cpu")
             self.assertEqual(stt_service.stt_compute_type(), "int8")
+            self.assertEqual(stt_service.stt_beam_size(), 5)
 
     def test_empty_audio_fails_before_model_load(self) -> None:
         with patch.object(stt_service, "_load_model") as load_model:
@@ -54,7 +56,9 @@ class STTServiceTests(unittest.TestCase):
             patch.object(stt_service, "_load_model", return_value=model),
             patch("services.api.app.stt_service.tempfile.NamedTemporaryFile") as named_temp,
             patch("services.api.app.stt_service.Path.unlink"),
+            patch.dict(os.environ, {}, clear=False),
         ):
+            os.environ.pop("STT_BEAM_SIZE", None)
             handle = Mock()
             handle.name = "C:/Temp/bunnelby-test.webm"
             named_temp.return_value.__enter__.return_value = handle
@@ -71,6 +75,7 @@ class STTServiceTests(unittest.TestCase):
         handle.write.assert_called_once_with(b"fake-audio")
         kwargs = model.transcribe.call_args.kwargs
         self.assertIsNone(kwargs["language"])
+        self.assertEqual(kwargs["beam_size"], 5)
         self.assertTrue(kwargs["vad_filter"])
         self.assertFalse(kwargs["condition_on_previous_text"])
 
