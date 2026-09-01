@@ -59,3 +59,5 @@ voice_lab_assets/
 # Local encrypted credentials / keys
 *.enc
 *.key
+
+.venv-wake/
